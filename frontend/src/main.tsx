@@ -56,18 +56,21 @@ type SimpleAiMode = "demo" | "ollama" | "openai-compatible";
 type SettingsSection = "overview" | "runtime" | "models" | "guides";
 
 function MedRayLogo({ dark }: { dark: boolean }) {
-  const structure = dark ? "#d7e4f0" : "#07111f";
-  const accent = dark ? "#2dd4bf" : "#0f766e";
+  const structure = dark ? "#b9cee2" : "#21384e";
   return <svg className="medrayLogo" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
     <g fill="none" stroke={structure} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M238 133c-30-29-69-36-103-17-16 9-29 21-39 38 26 27 63 37 105 28M274 133c30-29 69-36 103-17 16 9 29 21 39 38-26 27-63 37-105 28" strokeWidth="20" />
-      <path d="M232 181c-45-20-91-13-122 16 25 31 67 41 115 25M280 181c45-20 91-13 122 16-25 31-67 41-115 25" strokeWidth="20" />
-      <path d="M228 230c-49-15-94-5-124 24 25 30 69 39 120 22M284 230c49-15 94-5 124 24-25 30-69 39-120 22" strokeWidth="20" />
-      <path d="M225 279c-49-10-91 1-119 29 25 28 65 36 116 20M287 279c49-10 91 1 119 29-25 28-65 36-116 20" strokeWidth="20" />
-      <path d="M224 328c-43-5-77 5-101 29 23 24 57 31 101 18M288 328c43-5 77 5 101 29-23 24-57 31-101 18" strokeWidth="20" />
-      <path d="M256 105v313" stroke={accent} strokeWidth="13" strokeDasharray="28 13" />
+      <rect x="58" y="58" width="396" height="396" rx="48" strokeWidth="13" />
+      <path d="M256 113c-23-20-51-31-80-25-33 7-56 29-70 60M256 113c23-20 51-31 80-25 33 7 56 29 70 60" strokeWidth="8" />
+      <path d="M248 143c-32-14-66-13-96 1-19 9-35 23-49 39M264 143c32-14 66-13 96 1 19 9 35 23 49 39" strokeWidth="8" />
+      <path d="M248 165c-35-13-70-10-101 5-20 10-36 24-49 41M264 165c35-13 70-10 101 5 20 10 36 24 49 41" strokeWidth="8" />
+      <path d="M248 188c-38-12-73-5-104 11-21 11-37 26-49 44M264 188c38-12 73-5 104 11 21 11 37 26 49 44" strokeWidth="8" />
+      <path d="M248 212c-39-9-74-2-105 14-21 11-36 27-47 45M264 212c39-9 74-2 105 14 21 11 36 27 47 45" strokeWidth="8" />
+      <path d="M248 237c-38-7-72 1-101 17-20 11-35 27-45 45M264 237c38-7 72 1 101 17 20 11 35 27 45 45" strokeWidth="8" />
+      <path d="M248 263c-35-4-66 4-92 19-18 11-31 26-39 43M264 263c35-4 66 4 92 19 18 11 31 26 39 43" strokeWidth="8" />
+      <path d="M248 290c-29-1-55 7-76 20-15 10-26 22-33 37M264 290c29-1 55 7 76 20 15 10 26 22 33 37" strokeWidth="8" />
+      <path d="M256 112v222M248 143h16M248 166h16M248 189h16M248 213h16M248 238h16M248 264h16M248 291h16" strokeWidth="7" />
+      <path d="M147 329c-10 17-13 35-10 53M365 329c10 17 13 35 10 53M256 334c-9 14-21 24-35 31M256 334c9 14 21 24 35 31" strokeWidth="8" />
     </g>
-    <circle cx="256" cy="256" r="9" fill={accent} />
   </svg>;
 }
 
