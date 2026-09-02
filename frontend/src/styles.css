@@ -838,8 +838,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .brand { padding: 4px 6px 8px; gap: 12px; }
 .brand > span:last-child { display: grid; gap: 1px; }
 .brand small { color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: .02em; }
-.brandMark { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: linear-gradient(135deg, #115e59, #123c60); border: 1px solid #2f7f7b; }
-.brandMark svg { width: 30px; height: 30px; display: block; }
+.brandMark { width: 40px; height: 40px; flex: 0 0 40px; }
+.brandMark img { width: 40px; height: 40px; display: block; object-fit: cover; border-radius: 8px; }
 .rail nav { display: grid; gap: 20px; }
 .navGroup { display: grid; gap: 5px; }
 .navGroupLabel { padding: 0 10px 5px; color: #7890ad; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .11em; }

@@ -1,8 +1,7 @@
 # MedRay v2
 
 <p align="center">
-  <img src="frontend/public/medray-v2-logo.svg#gh-light-mode-only" width="170" alt="MedRay v2 logo">
-  <img src="frontend/public/medray-v2-logo-dark.svg#gh-dark-mode-only" width="170" alt="MedRay v2 logo">
+  <img src="frontend/public/medray-v2-logo.png" width="190" alt="MedRay v2 logo">
 </p>
 
 <p align="center"><strong>A local-first workspace for structured X-ray review, AI-assisted reporting, annotations, and model evaluation.</strong></p>
