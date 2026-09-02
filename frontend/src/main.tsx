@@ -57,17 +57,19 @@ type SettingsSection = "overview" | "runtime" | "models" | "guides";
 
 function MedRayLogo({ dark }: { dark: boolean }) {
   const structure = dark ? "#d7e4f0" : "#07111f";
+  const accent = dark ? "#2dd4bf" : "#0f766e";
   return <svg className="medrayLogo" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
     <g fill="none" stroke={structure} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M256 34 431 135c12 7 19 20 19 34v174c0 14-7 27-19 34L256 478 81 377c-12-7-19-20-19-34V169c0-14 7-27 19-34Z" strokeWidth="18" />
-      <path d="M235 145c-39-17-82-10-113 21 23 27 59 35 104 20M277 145c39-17 82-10 113 21-23 27-59 35-104 20" strokeWidth="22" />
-      <path d="M230 198c-47-13-89-7-116 20 23 28 64 35 111 20M282 198c47-13 89-7 116 20-23 28-64 35-111 20" strokeWidth="22" />
-      <path d="M227 251c-50-10-91-2-116 25 24 27 66 33 113 18M285 251c50-10 91-2 116 25-24 27-66 33-113 18" strokeWidth="22" />
-      <path d="M224 304c-47-7-83 2-105 27 22 25 60 31 108 17M288 304c47-7 83 2 105 27-22 25-60 31-108 17" strokeWidth="22" />
-      <path d="M256 104v304" stroke="#2dd4bf" strokeWidth="12" strokeDasharray="30 15" />
-      <path d="M256 77v27M256 408v27M90 256h27M422 256h-27" stroke="#2dd4bf" strokeWidth="16" />
+      <path d="M256 30 426 128q20 12 20 35v186q0 23-20 35L256 482 86 384q-20-12-20-35V163q0-23 20-35Z" strokeWidth="18" />
+      <path d="M256 73 402 157v168l-146 84-146-84V157Z" stroke={accent} strokeWidth="5" opacity=".42" />
+      <path d="M238 145c-34-20-75-16-109 8 19 29 57 43 105 30M274 145c34-20 75-16 109 8-19 29-57 43-105 30" strokeWidth="21" />
+      <path d="M233 198c-45-17-87-12-119 13 20 30 61 42 114 28M279 198c45-17 87-12 119 13-20 30-61 42-114 28" strokeWidth="21" />
+      <path d="M229 251c-48-13-90-5-119 20 21 29 63 39 115 25M283 251c48-13 90-5 119 20-21 29-63 39-115 25" strokeWidth="21" />
+      <path d="M226 304c-43-9-80-1-105 23 20 27 57 36 108 23M286 304c43-9 80-1 105 23-20 27-57 36-108 23" strokeWidth="21" />
+      <path d="M256 103v306" stroke={accent} strokeWidth="13" strokeDasharray="24 14" />
+      <path d="M256 67v28M256 417v28M74 256h29M438 256h-29" stroke={accent} strokeWidth="15" />
     </g>
-    <circle cx="256" cy="256" r="9" fill="#2dd4bf" />
+    <circle cx="256" cy="256" r="10" fill={accent} />
   </svg>;
 }
 
