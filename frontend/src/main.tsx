@@ -60,16 +60,13 @@ function MedRayLogo({ dark }: { dark: boolean }) {
   const accent = dark ? "#2dd4bf" : "#0f766e";
   return <svg className="medrayLogo" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
     <g fill="none" stroke={structure} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M256 30 426 128q20 12 20 35v186q0 23-20 35L256 482 86 384q-20-12-20-35V163q0-23 20-35Z" strokeWidth="18" />
-      <path d="M256 73 402 157v168l-146 84-146-84V157Z" stroke={accent} strokeWidth="5" opacity=".42" />
-      <path d="M238 145c-34-20-75-16-109 8 19 29 57 43 105 30M274 145c34-20 75-16 109 8-19 29-57 43-105 30" strokeWidth="21" />
-      <path d="M233 198c-45-17-87-12-119 13 20 30 61 42 114 28M279 198c45-17 87-12 119 13-20 30-61 42-114 28" strokeWidth="21" />
-      <path d="M229 251c-48-13-90-5-119 20 21 29 63 39 115 25M283 251c48-13 90-5 119 20-21 29-63 39-115 25" strokeWidth="21" />
-      <path d="M226 304c-43-9-80-1-105 23 20 27 57 36 108 23M286 304c43-9 80-1 105 23-20 27-57 36-108 23" strokeWidth="21" />
-      <path d="M256 103v306" stroke={accent} strokeWidth="13" strokeDasharray="24 14" />
-      <path d="M256 67v28M256 417v28M74 256h29M438 256h-29" stroke={accent} strokeWidth="15" />
+      <circle cx="256" cy="256" r="214" strokeWidth="18" />
+      <path d="M145 365V166l111 99 111-99v199" strokeWidth="28" />
+      <path d="M151 144c28-34 63-51 105-51s77 17 105 51" stroke={accent} strokeWidth="11" />
+      <path d="M256 81v350" stroke={accent} strokeWidth="13" strokeDasharray="27 15" />
+      <path d="M64 256h44M404 256h44" stroke={accent} strokeWidth="15" />
     </g>
-    <circle cx="256" cy="256" r="10" fill={accent} />
+    <circle cx="256" cy="265" r="10" fill={accent} />
   </svg>;
 }
 
