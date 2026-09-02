@@ -55,6 +55,22 @@ type UiLanguage = "id" | "en";
 type SimpleAiMode = "demo" | "ollama" | "openai-compatible";
 type SettingsSection = "overview" | "runtime" | "models" | "guides";
 
+function MedRayLogo({ dark }: { dark: boolean }) {
+  const structure = dark ? "#d7e4f0" : "#07111f";
+  return <svg className="medrayLogo" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
+    <g fill="none" stroke={structure} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M256 34 431 135c12 7 19 20 19 34v174c0 14-7 27-19 34L256 478 81 377c-12-7-19-20-19-34V169c0-14 7-27 19-34Z" strokeWidth="18" />
+      <path d="M235 145c-39-17-82-10-113 21 23 27 59 35 104 20M277 145c39-17 82-10 113 21-23 27-59 35-104 20" strokeWidth="22" />
+      <path d="M230 198c-47-13-89-7-116 20 23 28 64 35 111 20M282 198c47-13 89-7 116 20-23 28-64 35-111 20" strokeWidth="22" />
+      <path d="M227 251c-50-10-91-2-116 25 24 27 66 33 113 18M285 251c50-10 91-2 116 25-24 27-66 33-113 18" strokeWidth="22" />
+      <path d="M224 304c-47-7-83 2-105 27 22 25 60 31 108 17M288 304c47-7 83 2 105 27-22 25-60 31-108 17" strokeWidth="22" />
+      <path d="M256 104v304" stroke="#2dd4bf" strokeWidth="12" strokeDasharray="30 15" />
+      <path d="M256 77v27M256 408v27M90 256h27M422 256h-27" stroke="#2dd4bf" strokeWidth="16" />
+    </g>
+    <circle cx="256" cy="256" r="9" fill="#2dd4bf" />
+  </svg>;
+}
+
 const UI_COPY = {
   id: {
     pages: {
@@ -330,6 +346,8 @@ function App() {
     document.documentElement.lang = language;
     window.localStorage.setItem("medray-theme", dark ? "dark" : "light");
     window.localStorage.setItem("medray-ui-language", language);
+    const favicon = document.querySelector<HTMLLinkElement>("#app-favicon");
+    if (favicon) favicon.href = dark ? "/medray-v2-logo-dark.svg" : "/medray-v2-logo.svg";
     api.health().then(() => setStatus(language === "en" ? "App ready" : "Aplikasi siap")).catch(() => setStatus(copy.backendOffline));
   }, [dark, language, copy.backendOffline]);
 
@@ -367,7 +385,7 @@ function App() {
     <LanguageContext.Provider value={{ language, copy }}>
     <div className="app">
       <aside className="rail">
-        <div className="brand"><span className="brandMark"><img src={dark ? "/medray-v2-logo-dark.svg" : "/medray-v2-logo.svg"} alt="" /></span><span>MedRay <b>v2</b><small>{language === "en" ? "Local X-ray workspace" : "Ruang kerja X-ray lokal"}</small></span></div>
+        <div className="brand"><span className="brandMark"><MedRayLogo dark={dark} /></span><span>MedRay <b>v2</b><small>{language === "en" ? "Local X-ray workspace" : "Ruang kerja X-ray lokal"}</small></span></div>
         <nav aria-label={language === "en" ? "Main navigation" : "Navigasi utama"}>
           {navGroups.map(group => group.label.id === "Riset" ? <details className="navDisclosure" key={group.label.id} open={advancedNavOpen} onToggle={event => setAdvancedNavOpen(event.currentTarget.open)}>
             <summary><Layers size={16} /><span>{language === "en" ? "Research" : "Riset"}</span></summary>
