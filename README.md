@@ -312,4 +312,4 @@ See [docs/CREDITS.md](docs/CREDITS.md) for the project-level attribution note. M
 
 ## License
 
-No open-source license has been selected for MedRay v2 yet. Until a `LICENSE` file is added, copyright law reserves all rights. Add a license before accepting third-party reuse or external contributions.
+MedRay v2 is released under the [MIT License](LICENSE). The license applies to the project source code and documentation. Medical datasets, model weights, third-party libraries, and external services may have separate terms; review their licenses before redistribution or deployment.

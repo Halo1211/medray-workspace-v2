@@ -17,5 +17,5 @@ The project is currently an alpha research prototype and does not yet follow a f
 
 ### Limitations
 
-- No clinical validation, production authentication, DICOMweb, or open-source license has been provided yet.
+- No clinical validation, production authentication, or DICOMweb integration has been provided yet.
 - The Built-in Demo is deterministic scaffolding and is not a trained clinical model.

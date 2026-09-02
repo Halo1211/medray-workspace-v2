@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">MedRay v2 logo</title>
+  <desc id="desc">A geometric rib cage inside a medical imaging aperture.</desc>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 38 407 125c24 14 39 40 39 68v126c0 28-15 54-39 68L256 474 105 387c-24-14-39-40-39-68V193c0-28 15-54 39-68Z" stroke="#d7e4f0" stroke-width="30"/>
+    <path d="M222 166c-44-28-88-17-112 17 25 23 62 31 104 20M290 166c44-28 88-17 112 17-25 23-62 31-104 20" stroke="#d7e4f0" stroke-width="24"/>
+    <path d="M213 221c-52 15-91 4-116-25M299 221c52 15 91 4 116-25" stroke="#d7e4f0" stroke-width="24"/>
+    <path d="M211 272c-54 17-96 4-124-30M301 272c54 17 96 4 124-30" stroke="#d7e4f0" stroke-width="24"/>
+    <path d="M209 324c-51 17-91 3-117-29M303 324c51 17 91 3 117-29" stroke="#d7e4f0" stroke-width="24"/>
+    <path d="M210 375c-43 14-77 3-99-23M302 375c43 14 77 3 99-23" stroke="#d7e4f0" stroke-width="24"/>
+    <path d="M256 132v248" stroke="#2dd4bf" stroke-width="14"/>
+    <path d="M256 104V70M256 442v-34M104 256H70M442 256h-34" stroke="#2dd4bf" stroke-width="18"/>
+  </g>
+  <g fill="#2dd4bf">
+    <rect x="244" y="165" width="24" height="31" rx="9"/>
+    <rect x="244" y="214" width="24" height="31" rx="9"/>
+    <rect x="244" y="263" width="24" height="31" rx="9"/>
+    <rect x="244" y="312" width="24" height="31" rx="9"/>
+  </g>
+</svg>

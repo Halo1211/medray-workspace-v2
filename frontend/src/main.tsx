@@ -367,7 +367,7 @@ function App() {
     <LanguageContext.Provider value={{ language, copy }}>
     <div className="app">
       <aside className="rail">
-        <div className="brand"><span className="brandMark"><img src="/medray-v2-logo.svg" alt="" /></span><span>MedRay <b>v2</b><small>{language === "en" ? "Local X-ray workspace" : "Ruang kerja X-ray lokal"}</small></span></div>
+        <div className="brand"><span className="brandMark"><img src={dark ? "/medray-v2-logo-dark.svg" : "/medray-v2-logo.svg"} alt="" /></span><span>MedRay <b>v2</b><small>{language === "en" ? "Local X-ray workspace" : "Ruang kerja X-ray lokal"}</small></span></div>
         <nav aria-label={language === "en" ? "Main navigation" : "Navigasi utama"}>
           {navGroups.map(group => group.label.id === "Riset" ? <details className="navDisclosure" key={group.label.id} open={advancedNavOpen} onToggle={event => setAdvancedNavOpen(event.currentTarget.open)}>
             <summary><Layers size={16} /><span>{language === "en" ? "Research" : "Riset"}</span></summary>
