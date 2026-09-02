@@ -12,13 +12,13 @@
   "dependencies": {
     "@vitejs/plugin-react": "6.1.1",
     "lucide-react": "0.561.0",
-    "react": "19.2.3",
+    "react": "19.2.8",
     "react-dom": "19.2.3",
     "typescript": "7.0.2",
     "vite": "8.2.2"
   },
   "devDependencies": {
-    "@types/react": "19.2.8",
+    "@types/react": "19.2.18",
     "@types/react-dom": "19.2.3",
     "vitest": "4.1.11"
   }
