@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest a research, usability, documentation, or engineering improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach patient data, identifiable DICOM files, credentials, API keys, or private model weights.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What user or research problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the workflow, interface, API, or documentation change you would like.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Reading Room
+        - Case Library
+        - Reporting or export
+        - DICOM safety
+        - Model integration
+        - Validation Workbench
+        - Documentation
+        - Developer tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and privacy considerations
+      description: Explain any effect on patient data, model provenance, networking, clinical claims, or human-review gates.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or existing workflows did you consider?
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I confirmed that this request contains no patient data or secrets.
+          required: true

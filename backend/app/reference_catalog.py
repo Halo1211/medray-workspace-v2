@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+REFERENCE_CATALOG: dict[str, Any] = {
+    "version": "2026-07-11",
+    "scope": "Reference map for maturing MedRay v2 from demo prototype toward validated research tooling.",
+    "sources": [
+        {
+            "name": "MedRAX",
+            "kind": "agent architecture",
+            "url": "https://github.com/bowang-lab/MedRAX",
+            "why_it_matters": "Tool-oriented CXR agent pattern: classifier, segmentation, grounding, VQA, report generation, DICOM utilities, and selective tool initialization.",
+            "medray_action": "Keep the MedRAX adapter as a narrow tool contract and integrate diagnosis-support tools one by one: classifier, annotation/segmentation, grounding, VQA, and report generation.",
+        },
+        {
+            "name": "MedRAX paper",
+            "kind": "research benchmark",
+            "url": "https://arxiv.org/abs/2502.02673",
+            "why_it_matters": "Frames agentic CXR interpretation as multi-step reasoning with transparent tool traces and ChestAgentBench-style task categories.",
+            "medray_action": "Track detection, classification, localization, comparison, relationship, diagnosis, and characterization as explicit evaluation dimensions.",
+        },
+        {
+            "name": "DICOMweb",
+            "kind": "imaging interoperability",
+            "url": "https://www.dicomstandard.org/using/dicomweb",
+            "why_it_matters": "Defines REST-style QIDO-RS search, WADO-RS retrieve, and STOW-RS store patterns for medical imaging systems.",
+            "medray_action": "Do not present MedRay as PACS; add import/export adapters only after local case handling and de-identification are hardened.",
+        },
+        {
+            "name": "MONAI Deploy App SDK",
+            "kind": "deployment framework",
+            "url": "https://github.com/Project-MONAI/monai-deploy-app-sdk",
+            "why_it_matters": "Provides a packaging and verification pattern for healthcare imaging AI applications.",
+            "medray_action": "Use MONAI-style operators and model package metadata as the target shape for future local inference modules.",
+        },
+        {
+            "name": "TorchXRayVision",
+            "kind": "CXR model library",
+            "url": "https://mlmed.org/torchxrayvision/models.html",
+            "why_it_matters": "Provides open CXR datasets, preprocessing utilities, and pretrained pathology classifiers with explicit target labels.",
+            "medray_action": "Use it as the first optional local classifier adapter, exposing probabilities only as uncalibrated research signals.",
+        },
+        {
+            "name": "CheXpert",
+            "kind": "CXR dataset and reference labels",
+            "url": "https://stanfordmlgroup.github.io/competitions/chexpert/",
+            "why_it_matters": "Large CXR dataset with uncertainty labels and radiologist-labeled reference standard evaluation sets.",
+            "medray_action": "Use as a provenance reference for CXR classifier model cards and uncertainty-aware validation labels.",
+        },
+        {
+            "name": "PadChest-GR",
+            "kind": "grounded report dataset",
+            "url": "https://ai.nejm.org/doi/full/10.1056/AIdbp2401120",
+            "why_it_matters": "Provides a manually annotated bilingual CXR benchmark that links report statements to localized image regions.",
+            "medray_action": "Use its sentence-to-region data shape as the reference for linking findings, annotations, and report statements, while keeping the MedRay schema applicable to every X-ray anatomy.",
+        },
+        {
+            "name": "FDA qXR-Detect K251934",
+            "kind": "regulated localization workflow",
+            "url": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm?ID=K251934",
+            "why_it_matters": "Documents indication-bounded chest radiograph detection and localization with controlled updates and box-level performance assessment.",
+            "medray_action": "Require supported anatomy/finding declarations, box provenance, subgroup-aware validation, locked versions, and visible update history for localization tools.",
+        },
+        {
+            "name": "Efficiency and Quality of Generative AI-Assisted Radiograph Reporting",
+            "kind": "prospective workflow evaluation",
+            "url": "https://jamanetwork.com/journals/jamanetworkopen/fullarticle/2834943",
+            "why_it_matters": "Evaluates workflow-integrated draft reporting across chest and non-chest radiographs using documentation time and blinded peer review.",
+            "medray_action": "Measure report completion time, edit burden, clinical entity agreement, and final report quality separately from standalone model scores.",
+        },
+        {
+            "name": "AI-assisted multi-region fracture recognition",
+            "kind": "MSK workflow evidence",
+            "url": "https://pubs.rsna.org/doi/10.1148/radiol.210937",
+            "why_it_matters": "Shows a radiograph localization workflow spanning multiple fracture locations and evaluates reader performance with AI assistance.",
+            "medray_action": "Use a narrow, reviewed MSK fracture localization adapter as the first non-chest annotation pilot and validate reader assistance plus box-level behavior.",
+        },
+        {
+            "name": "SEI report generation",
+            "kind": "report generation architecture",
+            "url": "https://github.com/mk-runner/SEI",
+            "why_it_matters": "Separates factual structural entities from report style and incorporates indication plus traceable similar-case information.",
+            "medray_action": "Compose structured clinical entities before language generation and never allow retrieved cases to become untraceable patient-specific claims.",
+        },
+        {
+            "name": "Google CXR Foundation",
+            "kind": "CXR representation model",
+            "url": "https://developers.google.com/health-ai-developer-foundations/cxr-foundation/model-card",
+            "why_it_matters": "A CXR embedding model intended to accelerate development of image analysis models with less data and compute.",
+            "medray_action": "Track as a future feature-extractor option after classifier validation and model-card workflow are stable.",
+        },
+        {
+            "name": "IMDRF GMLP",
+            "kind": "safety and lifecycle",
+            "url": "https://www.imdrf.org/documents/good-machine-learning-practice-medical-device-development-guiding-principles",
+            "why_it_matters": "Good machine learning practice emphasizes representative data, human-AI team performance, risk management, and lifecycle monitoring.",
+            "medray_action": "Keep MedRay labeled as research/prototype until validation datasets, audit trails, and monitoring are implemented.",
+        },
+        {
+            "name": "CLAIM 2024",
+            "kind": "medical imaging AI reporting",
+            "url": "https://pubs.rsna.org/page/ai/claim",
+            "why_it_matters": "Checklist-style reporting guidance for transparent and reproducible medical imaging AI studies.",
+            "medray_action": "Use CLAIM-inspired metadata for model cards, dataset notes, preprocessing, validation, and failure analysis.",
+        },
+        {
+            "name": "FDA MLMD transparency principles",
+            "kind": "medical AI transparency",
+            "url": "https://www.fda.gov/medical-devices/software-medical-device-samd/transparency-machine-learning-enabled-medical-devices-guiding-principles",
+            "why_it_matters": "Frames transparency around audience, motivation, relevant information, placement, timing, and method in the clinical workflow.",
+            "medray_action": "Shape Trust Layer UI around what the user needs at the moment of reading: intended use, runtime, trace, limitations, and next safe action.",
+        },
+        {
+            "name": "FDA Clinical Decision Support Software guidance",
+            "kind": "clinical decision support",
+            "url": "https://www.fda.gov/regulatory-information/search-fda-guidance-documents/clinical-decision-support-software",
+            "why_it_matters": "Clarifies FDA thinking on clinical decision support software and the importance of users understanding the basis for recommendations.",
+            "medray_action": "Design result cards so clinicians can independently review source data, rationale, uncertainty, and limitations.",
+        },
+        {
+            "name": "FDA AI-enabled device lifecycle guidance",
+            "kind": "lifecycle risk management",
+            "url": "https://www.fda.gov/regulatory-information/search-fda-guidance-documents/artificial-intelligence-enabled-device-software-functions-lifecycle-management-and-marketing",
+            "why_it_matters": "Emphasizes risk management and documentation across the device total product life cycle for AI-enabled software functions.",
+            "medray_action": "Keep model additions behind versioned cards, validation state, configuration snapshots, change notes, and rollback/fallback behavior.",
+        },
+        {
+            "name": "NIST AI Risk Management Framework",
+            "kind": "AI governance",
+            "url": "https://www.nist.gov/itl/ai-risk-management-framework",
+            "why_it_matters": "Provides a risk-management lens for trustworthy AI across mapping, measuring, managing, and governance activities.",
+            "medray_action": "Map each roadmap milestone to a risk control: data provenance, model traceability, local validation, monitoring, and user-facing limits.",
+        },
+        {
+            "name": "STARD-AI",
+            "kind": "diagnostic accuracy reporting",
+            "url": "https://www.nature.com/articles/s41591-025-03953-8",
+            "why_it_matters": "Gives AI-specific reporting expectations for diagnostic accuracy studies, useful once MedRay has a validation workbench.",
+            "medray_action": "Use it as inspiration for validation exports: population, index test, reference standard, failure cases, and uncertainty reporting.",
+        },
+        {
+            "name": "DECIDE-AI",
+            "kind": "AI decision support evaluation",
+            "url": "https://www.nature.com/articles/s41591-022-01772-9",
+            "why_it_matters": "Reporting guideline for early-stage clinical evaluation of AI-based decision support systems.",
+            "medray_action": "Use as a checklist for future human review workflow studies and result usability evaluation.",
+        },
+        {
+            "name": "TRIPOD+AI",
+            "kind": "prediction model reporting",
+            "url": "https://www.bmj.com/content/385/bmj-2023-078378",
+            "why_it_matters": "Harmonized reporting guidance for prediction models using regression or machine learning.",
+            "medray_action": "Use it to shape validation exports once MedRay reports dataset-specific prediction performance.",
+        },
+        {
+            "name": "ACR Data Science Institute",
+            "kind": "radiology AI implementation",
+            "url": "https://www.acr.org/Data-Science-and-Informatics/ACR-Data-Science-Institute",
+            "why_it_matters": "Radiology-focused resources for quality assurance, implementation, and safe use of imaging AI.",
+            "medray_action": "Keep the product centered on radiology workflow, human-machine review, and local validation rather than model demos alone.",
+        },
+        {
+            "name": "Model Cards for Model Reporting",
+            "kind": "model documentation",
+            "url": "https://arxiv.org/abs/1810.03993",
+            "why_it_matters": "Introduces concise model documentation covering intended use, evaluation, limitations, and performance characteristics.",
+            "medray_action": "Expand model cards from demo placeholders into structured records with intended use, data notes, metrics, limitations, and contraindicated use.",
+        },
+        {
+            "name": "Hugging Face model cards",
+            "kind": "model registry metadata",
+            "url": "https://huggingface.co/docs/hub/en/model-cards",
+            "why_it_matters": "Shows practical model-card metadata fields for discovery, license, datasets, tasks, base models, and evaluation results.",
+            "medray_action": "Improve Model Finder scoring by reading model-card metadata before recommending a model for import.",
+        },
+        {
+            "name": "DICOM PS3.15 Attribute Confidentiality Profiles",
+            "kind": "DICOM de-identification",
+            "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part15/chapter_e.html",
+            "why_it_matters": "Defines de-identification profile actions and warns that attribute handling alone does not guarantee de-identification.",
+            "medray_action": "Build DICOM Safety as preview-first: show protected/retained tags, private tags, burned-in-pixel risk, and export caveats.",
+        },
+        {
+            "name": "C2PA specifications",
+            "kind": "media provenance",
+            "url": "https://spec.c2pa.org/specifications/specifications/2.4/index.html",
+            "why_it_matters": "Offers a media provenance pattern for certifying source and history without forcing MedRay to adopt the full standard yet.",
+            "medray_action": "Use C2PA as design inspiration for future signed audit manifests and export provenance, while keeping current hashes simple and inspectable.",
+        },
+    ],
+    "inspiration_patterns": [
+        {
+            "pattern": "Progressive transparency",
+            "inspired_by": ["FDA MLMD transparency principles"],
+            "medray_takeaway": "Show the minimum useful trust facts in the reading workflow, then let the user drill into model cards and audit JSON.",
+        },
+        {
+            "pattern": "Reviewable result cards",
+            "inspired_by": ["FDA Clinical Decision Support Software guidance", "DECIDE-AI", "TRIPOD+AI"],
+            "medray_takeaway": "Every AI candidate diagnosis or annotated finding should expose status, evidence, annotation provenance, uncertainty, source, model trace, and next safe human action.",
+        },
+        {
+            "pattern": "Annotation provenance as evidence",
+            "inspired_by": ["MedRAX", "MedRAX paper", "PadChest-GR", "FDA qXR-Detect K251934"],
+            "medray_takeaway": "Annotation, grounding, and segmentation outputs should be first-class evidence linked bidirectionally to findings, candidate diagnosis, report statements, reviewer decisions, model trace, and export bundles.",
+        },
+        {
+            "pattern": "One X-ray workstation with anatomy-specific pipelines",
+            "inspired_by": ["Efficiency and Quality of Generative AI-Assisted Radiograph Reporting", "AI-assisted multi-region fracture recognition"],
+            "medray_takeaway": "Share the review, evidence, reporting, and audit contract across X-rays while routing chest, MSK, abdomen, spine, and other studies to separately supported and validated tools.",
+        },
+        {
+            "pattern": "Lifecycle-aware model registry",
+            "inspired_by": ["FDA AI-enabled device lifecycle guidance", "NIST AI Risk Management Framework"],
+            "medray_takeaway": "Every real model should have version, intended use, validation state, known limits, config trace, and change history.",
+        },
+        {
+            "pattern": "Optional classifier before localization",
+            "inspired_by": ["TorchXRayVision", "CheXpert"],
+            "medray_takeaway": "Start real vision inference with uncalibrated CXR probabilities and clear provenance before adding boxes, masks, or report claims.",
+        },
+        {
+            "pattern": "Metadata-first model discovery",
+            "inspired_by": ["Model Cards for Model Reporting", "Hugging Face model cards"],
+            "medray_takeaway": "Model Finder should rank models by evidence and documentation quality, not just keyword match or popularity.",
+        },
+        {
+            "pattern": "Preview before irreversible export",
+            "inspired_by": ["DICOM PS3.15 Attribute Confidentiality Profiles"],
+            "medray_takeaway": "DICOM de-identification should show exactly what will be protected, retained, or flagged before saving derived files.",
+        },
+        {
+            "pattern": "Portable provenance",
+            "inspired_by": ["C2PA specifications"],
+            "medray_takeaway": "Audit bundle exports can evolve toward signed manifests that describe image origin, transformations, analysis runtime, and report history.",
+        },
+        {
+            "pattern": "Validation report discipline",
+            "inspired_by": ["STARD-AI", "CLAIM 2024"],
+            "medray_takeaway": "Validation exports should separate dataset description, reference labels, model output, metrics, uncertainty, and failure review.",
+        },
+    ],
+    "maturity_gaps": [
+        {
+            "area": "Clinical validity",
+            "current": "Validation Workbench, result-card agreement, box IoU/hit-rate metrics, audit exports, and conservative disclaimers are implemented for research review.",
+            "next": "Attach structured validation evidence to local model cards: protocol ID, held-out split, metric summary, false-alert burden, subgroup notes, known failures, reviewer, and date.",
+        },
+        {
+            "area": "Real vision inference",
+            "current": "TorchXRayVision CXR classifier and reviewed-local Ultralytics MSK detector hooks exist; MSK detector remains disabled until reviewed `.pt` weights are imported.",
+            "next": "Exercise one narrow reviewed local detector artifact end to end before enabling any broader localization claims.",
+        },
+        {
+            "area": "Interoperability",
+            "current": "Local upload, DICOM parsing, multi-image/series navigation, per-image analysis state, local SQLite case library, and source-aligned annotation/report/validation metadata are implemented.",
+            "next": "Add de-identification preview and optional DICOMweb import/export adapters behind explicit user controls.",
+        },
+        {
+            "area": "Auditability",
+            "current": "Audit bundles include runtime snapshots, model trace, report, warnings, annotations, grounded review statements, and model-vs-review separation.",
+            "next": "Link each active local model to structured validation evidence and artifact hashes in the audit bundle.",
+        },
+        {
+            "area": "User safety",
+            "current": "Watermarks, fallback warnings, reviewed-state promotion, model-card gates, and defensive handling of malformed legacy data are implemented.",
+            "next": "Add stronger unsafe-claim filters and per-model limitation display tied to validation evidence.",
+        },
+    ],
+    "recommended_next_builds": [
+        "Structured validation evidence: protocol ID, held-out split, metrics, false-alert burden, subgroup notes, known failures, reviewer, date, artifact hash, and weights filename.",
+        "End-to-end reviewed local artifact rehearsal through Model Finder, registry, Runtime Settings, analysis trace, Validation Workbench, audit export, and chat review.",
+        "Keep MSK grounding disabled until a narrow reviewed fracture-detector `.pt` artifact and validation evidence are present.",
+        "Multi-image study navigator with source image, view, series, annotations, report statements, and validation references kept aligned.",
+        "Stabilize implemented manual point/polygon authoring with real reviewer workflows.",
+        "Stabilize the implemented DICOM Safety foundation against real vendor files and a formally reviewed de-identification protocol.",
+        "Unsafe-claim and limitation display improvements tied to active model cards and validation evidence.",
+    ],
+}
+
+
+def get_reference_catalog() -> dict[str, Any]:
+    return REFERENCE_CATALOG

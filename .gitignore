@@ -1,0 +1,62 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.medray-database-location.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node and frontend builds
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.npmrc
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# MedRay runtime data
+data/cases/*
+data/models/*
+data/cache/*
+data/exports/*
+data/tmp/*
+data/validation/*
+data/*.sqlite
+data/*.sqlite3
+data/*.db
+!data/cases/.gitkeep
+!data/models/.gitkeep
+!data/cache/.gitkeep
+!data/exports/.gitkeep
+!data/tmp/.gitkeep
+!data/validation/.gitkeep
+
+# Medical images and model weights
+*.dcm
+*.dicom
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.gguf
+
+# Logs, editors, and operating-system files
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

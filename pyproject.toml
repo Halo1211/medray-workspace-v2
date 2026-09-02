@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+cache_dir = "backend/.pytest_cache"

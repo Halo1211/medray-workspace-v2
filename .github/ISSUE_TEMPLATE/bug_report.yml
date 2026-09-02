@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible MedRay v2 problem using synthetic data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach patient data, DICOM files containing identifiers, credentials, or API keys.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Use only synthetic or properly de-identified data.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove paths, identifiers, credentials, and confidential data before pasting.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data-safety confirmation
+      options:
+        - label: I confirmed that this report contains no patient data or secrets.
+          required: true
