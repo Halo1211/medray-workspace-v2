@@ -6,7 +6,7 @@ openai>=1.40.0
 huggingface_hub>=0.24.0
 
 # Hugging Face/local Transformers runtimes, including Gemma/MedGemma-family models.
-transformers>=4.50.0
+transformers>=5.16.1
 accelerate>=0.33.0
 safetensors>=0.4.4
 sentencepiece>=0.2.0
