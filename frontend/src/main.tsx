@@ -21,6 +21,14 @@ import {
   Moon,
   Pause,
   Pentagon,
+  Plus,
+  Circle,
+  Ruler,
+  Undo2,
+  Redo2,
+  RotateCw,
+  FlipHorizontal2,
+  FlipVertical2,
   Play,
   RefreshCw,
   RotateCcw,
@@ -40,20 +48,22 @@ import {
   ZoomIn,
   ZoomOut
 } from "lucide-react";
-import { api, imageUrl } from "./services/api";
+import { api, dicomPreviewUrl, imageUrl } from "./services/api";
 import { annotationsForImage, buildGroundedReviewStatements, linkAnnotationEvidence, preferredAnnotations } from "./annotationLinks";
 import { coordinatePoints, hasPointCoordinate, hasPolygonCoordinate, isValidPolygonPoints, polygonArea, polygonBounds } from "./annotationGeometry";
-import type { AnalysisResult, Annotation, AnnotationReviewExport, CaseRecord, DatabaseLocation, DicomSafetyReport, DicomTag, DifferentialCandidate, DownloadJob, HardwarePlan, HuggingFaceAuthStatus, LocalModelArtifact, ModelCard, ReferenceCatalog, ResultCard, ResultEvidence, RuntimeConfig, StudyImage, ValidationLabel, ValidationResult, VisionAdapter } from "./types";
+import { commitAnnotationChange, createAnnotationHistory, measureAnnotation, redoAnnotationChange, undoAnnotationChange } from "./annotationWorkspace";
+import { EMPTY_CASE_METADATA, annotationConfidencePercent, annotationOrigin, buildValidationRerunPrompt, caseMetadataDraft, createFreshCaseWorkspaceState, filterWorkspaceAnnotations, mergeCaseMetadata, type AnnotationWorkspaceFilter, type CaseMetadataDraft } from "./caseWorkspace";
+import type { AnalysisResult, Annotation, AnnotationReviewExport, CaseRecord, DatabaseLocation, DicomSafetyReport, DicomTag, DicomViewerProfile, DifferentialCandidate, DownloadJob, HardwarePlan, HuggingFaceAuthStatus, LocalModelArtifact, ModelCard, ReferenceCatalog, ResultCard, ResultEvidence, RuntimeConfig, StudyImage, ValidationLabel, ValidationResult, VisionAdapter } from "./types";
 import "./styles.css";
+import { AISetup } from "./AISetup";
+import { setupApi } from "./aiSetupApi";
 
-type Page = "Dashboard" | "Reading Room" | "Case Library" | "User Guide" | "Validation Workbench" | "Model Finder" | "Runtime Settings" | "General Settings" | "About";
-type WorkspaceTab = "AI Output" | "Result Cards" | "Annotations" | "Report" | "AI Chat" | "Trust" | "DICOM Safety" | "Roadmap";
+type Page = "Dashboard" | "Reading Room" | "Case Library" | "User Guide" | "Model Finder" | "Runtime Settings" | "General Settings" | "About";
+type WorkspaceTab = "AI Output" | "Result Cards" | "Annotations" | "Report" | "AI Chat" | "Trust" | "DICOM Safety";
 type ImageBoxSize = { displayWidth: number; displayHeight: number; naturalWidth: number; naturalHeight: number };
-type AnnotationTool = "select" | "box" | "point" | "polygon";
+type AnnotationTool = "select" | "box" | "point" | "polygon" | "ellipse" | "length";
 type AnnotationReviewStatus = NonNullable<Annotation["review_status"]>;
 type UiLanguage = "id" | "en";
-type SimpleAiMode = "demo" | "ollama" | "openai-compatible";
-type SettingsSection = "overview" | "runtime" | "models" | "guides";
 
 const UI_COPY = {
   id: {
@@ -61,9 +71,8 @@ const UI_COPY = {
       Dashboard: "Dasbor",
       "Reading Room": "Ruang Baca",
       "User Guide": "Panduan",
-      "Validation Workbench": "Validasi",
       "Model Finder": "Cari Model",
-      "Runtime Settings": "Pengaturan AI",
+      "Runtime Settings": "AI Setup",
       "General Settings": "Pengaturan Umum",
       "Case Library": "Daftar Kasus",
       About: "Tentang",
@@ -138,9 +147,8 @@ const UI_COPY = {
       Dashboard: "Dashboard",
       "Reading Room": "Reading Room",
       "User Guide": "Guide",
-      "Validation Workbench": "Validation",
       "Model Finder": "Model Finder",
-      "Runtime Settings": "AI Settings",
+      "Runtime Settings": "AI Setup",
       "General Settings": "General Settings",
       "Case Library": "Case Library",
       About: "About",
@@ -226,28 +234,20 @@ const navGroups: { label: { id: string; en: string }; pages: { name: Page; icon:
       { name: "Reading Room", icon: <Stethoscope size={18} /> },
       { name: "Case Library", icon: <Library size={18} /> },
       { name: "User Guide", icon: <BookOpen size={18} /> },
-    ],
-  },
-  {
-    label: { id: "Riset", en: "Research" },
-    pages: [
-      { name: "Validation Workbench", icon: <ClipboardCheck size={18} /> },
-      { name: "Model Finder", icon: <Search size={18} /> },
       { name: "Runtime Settings", icon: <Settings size={18} /> },
       { name: "About", icon: <Archive size={18} /> },
     ],
   },
 ];
 
-const ADVANCED_PAGES = new Set<Page>(["Validation Workbench", "Model Finder", "Runtime Settings", "About"]);
+const ADVANCED_PAGES = new Set<Page>(["Model Finder"]);
 
 const PAGE_DESCRIPTIONS: Record<UiLanguage, Record<Page, string>> = {
   id: {
     Dashboard: "Mulai atau lanjutkan peninjauan X-ray.",
     "Reading Room": "Impor, analisis, tinjau, lalu siapkan laporan.",
-    "Case Library": "Cari dan buka kembali kasus lokal.",
-    "User Guide": "Panduan singkat penggunaan MedRay.",
-    "Validation Workbench": "Uji kesesuaian output untuk riset.",
+    "Case Library": "Kelola kasus, edit metadata, dan jalankan validasi dalam satu tempat.",
+    "User Guide": "Panduan lengkap alur kerja, validasi, dan opsi lanjutan MedRay.",
     "Model Finder": "Cari model tambahan bila diperlukan.",
     "Runtime Settings": "Hubungkan dan atur model AI tambahan.",
     "General Settings": "Atur tampilan dan penyimpanan lokal.",
@@ -256,13 +256,12 @@ const PAGE_DESCRIPTIONS: Record<UiLanguage, Record<Page, string>> = {
   en: {
     Dashboard: "Start or continue an X-ray review.",
     "Reading Room": "Import, analyze, review, then prepare a report.",
-    "Case Library": "Find and reopen local cases.",
-    "User Guide": "A short guide to using MedRay.",
-    "Validation Workbench": "Run research agreement checks.",
+    "Case Library": "Manage cases, edit metadata, and run validation in one place.",
+    "User Guide": "A detailed guide to MedRay workflows, validation, and advanced options.",
     "Model Finder": "Find additional models when needed.",
     "Runtime Settings": "Connect and configure additional AI models.",
     "General Settings": "Configure the interface and local storage.",
-    About: "Product, safety, and reference information.",
+    About: "Product identity, storage, intended use, and safety status.",
   },
 };
 
@@ -363,6 +362,14 @@ function App() {
     }
   }
 
+  function startNewCase() {
+    const fresh = createFreshCaseWorkspaceState();
+    setActiveCase(fresh.activeCase);
+    setAnalysis(fresh.analysis);
+    setPreview(fresh.preview);
+    setPage("Reading Room");
+  }
+
   return (
     <LanguageContext.Provider value={{ language, copy }}>
     <div className="app">
@@ -393,13 +400,11 @@ function App() {
           </div>
         </header>
         {page === "Dashboard" && <Dashboard activeCase={activeCase} analysis={analysis} onNavigate={setPage} />}
-        {page === "Reading Room" && <ReadingRoom activeCase={activeCase} setActiveCase={setActiveCase} preview={preview} setPreview={setPreview} analysis={analysis} setAnalysis={setAnalysis} onOpenGuide={() => setPage("User Guide")} />}
+        {page === "Reading Room" && <ReadingRoom activeCase={activeCase} setActiveCase={setActiveCase} preview={preview} setPreview={setPreview} analysis={analysis} setAnalysis={setAnalysis} onOpenGuide={() => setPage("User Guide")} onNewCase={startNewCase} onOpenLibrary={() => setPage("Case Library")} />}
         {page === "User Guide" && <UserGuide onNavigate={setPage} />}
-        {page === "Validation Workbench" && <ValidationWorkbench activeCase={activeCase} analysis={analysis} onOpenCase={loadCase} />}
-        {page === "Model Finder" && <ModelFinder />}
-        {page === "Runtime Settings" && <RuntimeSettings language={language} />}
+        {page === "Runtime Settings" && <AISetup language={language} modelTools={detail => <LocalModelManager selectedDetail={detail} />} onLater={() => setPage("Reading Room")} />}
         {page === "General Settings" && <GeneralSettings dark={dark} setDark={setDark} language={language} setLanguage={setLanguage} onOpenRuntime={() => setPage("Runtime Settings")} />}
-        {page === "Case Library" && <CaseLibrary onOpen={loadCase} onDeleted={clearActiveCaseIf} onCleared={() => clearActiveCaseIf()} />}
+        {page === "Case Library" && <CaseLibrary activeCase={activeCase} analysis={analysis} onOpen={loadCase} onDeleted={clearActiveCaseIf} onCleared={() => clearActiveCaseIf()} />}
         {page === "About" && <About />}
       </main>
     </div>
@@ -415,7 +420,7 @@ function Dashboard({ activeCase, analysis, onNavigate }: { activeCase: CaseRecor
         <div>
           <span className="eyebrow">{language === "en" ? "Guided workspace" : "Ruang kerja terpandu"}</span>
           <h2>{language === "en" ? "Start an X-ray review in four clear steps" : "Tinjau X-ray dalam empat langkah yang jelas"}</h2>
-          <p>{language === "en" ? "Import an image, run the analysis, review the evidence, then prepare a report. Advanced tools stay available when you need them." : "Impor gambar, jalankan analisis, tinjau bukti, lalu siapkan laporan. Alat lanjutan tetap tersedia saat dibutuhkan."}</p>
+          <p>{language === "en" ? "Import an image, run the analysis, review the evidence, then prepare a report. AI and model settings are available in AI Setup." : "Impor gambar, jalankan analisis, tinjau bukti, lalu siapkan laporan. Alat lanjutan tetap tersedia saat dibutuhkan."}</p>
           <div className="heroActions">
             <button className="primaryAction" onClick={() => onNavigate("Reading Room")}><Play size={17} />{activeCase ? (language === "en" ? "Continue active case" : "Lanjutkan kasus aktif") : (language === "en" ? "Start a new review" : "Mulai peninjauan baru")}</button>
             <button onClick={() => onNavigate("User Guide")}><BookOpen size={17} />{language === "en" ? "Open the guide" : "Buka panduan"}</button>
@@ -462,22 +467,41 @@ function UserGuide({ onNavigate }: { onNavigate: (page: Page) => void }) {
 
     <section className="guideSection panel">
       <div className="sectionHeading"><span>02</span><div><h3>{isEn ? "Daily use" : "Cara menggunakan program"}</h3><p>{isEn ? "Complete the review from left to right; advanced settings are optional." : "Selesaikan review dari kiri ke kanan; pengaturan lanjutan bersifat opsional."}</p></div></div>
-      <div className="flowChart useFlow" aria-label={isEn ? "Application use flowchart" : "Flowchart penggunaan aplikasi"}>
-        {[isEn ? "Import image" : "Impor gambar", isEn ? "Run analysis" : "Jalankan analisis", isEn ? "Review and correct" : "Review dan koreksi", isEn ? "Report and export" : "Laporan dan ekspor"].map((item, index) => <React.Fragment key={item}><div className="flowNode">{item}</div>{index < 3 && <span className="flowArrow" aria-hidden="true">→</span>}</React.Fragment>)}
+      <div className="complexFlow" aria-label={isEn ? "Detailed MedRay workflow" : "Alur MedRay terperinci"}>
+        <div className="flowLane"><span>1</span><div className="flowNode"><b>{isEn ? "Import study" : "Impor studi"}</b><small>{isEn ? "Label + optional ID/NPM, accession, indication" : "Label + ID/NPM, nomor akses, indikasi opsional"}</small></div><span className="flowArrow">→</span><div className="flowDecision"><b>DICOM?</b><small>{isEn ? "Yes: inspect tags and burned-in risk" : "Ya: periksa tag dan risiko burned-in"}</small></div></div>
+        <div className="flowLane"><span>2</span><div className="flowNode"><b>{isEn ? "Confirm active image" : "Konfirmasi gambar aktif"}</b><small>{isEn ? "Choose frame, window, orientation, and body area" : "Pilih frame, window, orientasi, dan area tubuh"}</small></div><span className="flowArrow">→</span><div className="flowDecision"><b>{isEn ? "Routing uncertain?" : "Routing belum pasti?"}</b><small>{isEn ? "Override the body area, then rerun" : "Pilih area tubuh manual, lalu jalankan ulang"}</small></div></div>
+        <div className="flowLane"><span>3</span><div className="flowNode"><b>{isEn ? "AI candidate output" : "Kandidat output AI"}</b><small>{isEn ? "Finding + annotation + confidence + source" : "Temuan + anotasi + confidence + sumber"}</small></div><span className="flowArrow">→</span><div className="flowDecision"><b>{isEn ? "Accept, edit, or reject" : "Terima, edit, atau tolak"}</b><small>{isEn ? "Link evidence and add reviewer rationale" : "Tautkan bukti dan tambahkan alasan reviewer"}</small></div></div>
+        <div className="flowLane"><span>4</span><div className="flowNode"><b>{isEn ? "Need another AI pass?" : "Perlu tinjauan AI lagi?"}</b><small>{isEn ? "Ask AI to re-review with validation feedback" : "Minta AI meninjau ulang dengan umpan balik validasi"}</small></div><span className="flowArrow loopArrow">↺</span><div className="flowNode finalNode"><b>{isEn ? "Promote reviewed evidence" : "Promosikan bukti tervalidasi"}</b><small>{isEn ? "Draft report → identity check → export" : "Draf laporan → cek identitas → ekspor"}</small></div></div>
       </div>
       <div className="guideChecklist">
         <div><b>1. {isEn ? "Import" : "Impor"}</b><span>{isEn ? "Add a case label, select PNG/JPG/DICOM, then confirm the active image." : "Isi label kasus, pilih PNG/JPG/DICOM, lalu pastikan gambar aktif."}</span></div>
-        <div><b>2. {isEn ? "Analyze" : "Analisis"}</b><span>{isEn ? "Use automatic body-area detection unless it is incorrect; optional instructions stay under Advanced options." : "Gunakan deteksi area tubuh otomatis kecuali hasilnya salah; instruksi tambahan ada di Opsi lanjutan."}</span></div>
+        <div><b>2. {isEn ? "Analyze" : "Analisis"}</b><span>{isEn ? "Use automatic body-area detection unless it is incorrect; optional instructions stay under Reading options." : "Gunakan deteksi area tubuh otomatis kecuali hasilnya salah; instruksi tambahan ada di Opsi lanjutan."}</span></div>
         <div><b>3. Review</b><span>{isEn ? "Read the AI summary, then inspect findings, annotations, source, confidence, and uncertainty." : "Baca ringkasan AI, lalu periksa temuan, anotasi, sumber, tingkat keyakinan, dan ketidakpastian."}</span></div>
         <div><b>4. {isEn ? "Report" : "Laporan"}</b><span>{isEn ? "Only promote reviewed findings. Check identity and DICOM safety before export." : "Masukkan hanya temuan yang sudah ditinjau. Periksa identitas dan keamanan DICOM sebelum ekspor."}</span></div>
       </div>
       <button className="primaryAction" onClick={() => onNavigate("Reading Room")}><Play size={17} />{isEn ? "Open Reading Room" : "Buka Ruang Baca"}</button>
     </section>
 
+    <section className="guideSection panel"><div className="sectionHeading"><span>03</span><div><h3>{isEn ? "Advanced annotations" : "Anotasi lanjutan"}</h3><p>{isEn ? "Use box, point, polygon, ellipse ROI, or calibrated length tools." : "Gunakan kotak, titik, poligon, ROI elips, atau alat ukur panjang terkalibrasi."}</p></div></div><div className="guideChecklist"><div><b>{isEn ? "Edit safely" : "Edit dengan aman"}</b><span>{isEn ? "Select geometry to move it; lock reviewed marks and use Ctrl+Z / Ctrl+Shift+Z for undo/redo." : "Pilih geometri untuk memindahkannya; kunci tanda yang sudah ditinjau dan gunakan Ctrl+Z / Ctrl+Shift+Z untuk undo/redo."}</span></div><div><b>{isEn ? "Ground evidence" : "Tautkan bukti"}</b><span>{isEn ? "Link each annotation to a result card and report section, then record a review decision and note." : "Tautkan setiap anotasi ke kartu hasil dan bagian laporan, lalu simpan keputusan serta catatan review."}</span></div><div><b>{isEn ? "Measurements" : "Pengukuran"}</b><span>{isEn ? "DICOM Pixel Spacing produces millimetres; images without calibration remain explicitly uncalibrated." : "DICOM Pixel Spacing menghasilkan milimeter; gambar tanpa kalibrasi tetap ditandai tidak terkalibrasi."}</span></div></div></section>
+
+    <section className="guideSection panel"><div className="sectionHeading"><span>04</span><div><h3>{isEn ? "DICOM viewer" : "Viewer DICOM"}</h3><p>{isEn ? "Choose frames, use DICOM window presets or manual center/width, invert MONOCHROME display, rotate, flip, zoom, and reset." : "Pilih frame, gunakan preset window DICOM atau center/width manual, inversi tampilan MONOCHROME, putar, balik, zoom, dan reset."}</p></div></div><p className="guideNote">{isEn ? "Display controls do not modify the source DICOM. Use DICOM Safety before exporting, and inspect burned-in pixels separately." : "Kontrol tampilan tidak mengubah DICOM sumber. Gunakan DICOM Safety sebelum ekspor dan periksa pixel burned-in secara terpisah."}</p></section>
+
+    <section className="guideSection panel">
+      <div className="sectionHeading"><span>05</span><div><h3>{isEn ? "Case Library, validation, and AI" : "Pustaka kasus, validasi, dan AI"}</h3></div></div>
+      <div className="guideChecklist">
+        <div><b>{isEn ? "One case workspace" : "Satu ruang kerja kasus"}</b><span>{isEn ? "The registry and validation tools share one continuous page. Open validation above the internally scrollable case registry so it remains reachable with a large library." : "Registri dan alat validasi berada dalam satu halaman berkelanjutan. Buka validasi di atas daftar kasus yang dapat digulir agar tetap mudah dijangkau saat jumlah kasus banyak."}</span></div>
+        <div><b>{isEn ? "AI sampling" : "Pengambilan sampel AI"}</b><span>{isEn ? "Temperature controls variation, top-p limits the sampled probability mass, and seed can make supported providers more repeatable. Change one control at a time." : "Temperature mengatur variasi, top-p membatasi massa probabilitas pengambilan sampel, dan seed dapat membuat penyedia yang mendukungnya lebih konsisten. Ubah satu kontrol setiap kali."}</span></div>
+        <div><b>{isEn ? "Safety thresholds" : "Ambang keamanan"}</b><span>{isEn ? "Localization and auto-accept thresholds affect what is surfaced, not whether an output is clinically correct. Low confidence requires more scrutiny, not automatic rejection." : "Ambang lokalisasi dan penerimaan otomatis memengaruhi keluaran yang ditampilkan, bukan menentukan kebenaran klinis. Tingkat keyakinan rendah memerlukan pemeriksaan lebih ketat, bukan penolakan otomatis."}</span></div>
+        <div><b>{isEn ? "Timeout and retries" : "Batas waktu dan percobaan ulang"}</b><span>{isEn ? "Increase timeout for large local models. Keep retries low to avoid repeating expensive or cloud-bound requests." : "Naikkan batas waktu untuk model lokal besar. Batasi percobaan ulang agar permintaan mahal atau berbasis cloud tidak berulang berlebihan."}</span></div>
+        <div><b>{isEn ? "Downloads" : "Unduhan"}</b><span>{isEn ? "Use a trusted direct URL and, when available, a SHA-256 checksum. Parallel byte ranges fall back automatically when unsupported." : "Gunakan URL langsung yang tepercaya dan, jika tersedia, checksum SHA-256. Rentang byte paralel otomatis beralih ke satu aliran bila tidak didukung."}</span></div>
+        <div><b>{isEn ? "Reset strategy" : "Strategi reset"}</b><span>{isEn ? "If experiments become difficult to compare, restore the safe preset, set a deterministic seed, and record the runtime snapshot with the validation export." : "Jika eksperimen sulit dibandingkan, pulihkan preset aman, gunakan seed deterministik, dan simpan snapshot runtime bersama ekspor validasi."}</span></div>
+      </div>
+    </section>
+
   </section>;
 }
 
-function ReadingRoom(props: {
+export function ReadingRoom(props: {
   activeCase: CaseRecord | null;
   setActiveCase: (c: CaseRecord | null) => void;
   preview: string;
@@ -485,26 +509,39 @@ function ReadingRoom(props: {
   analysis: AnalysisResult | null;
   setAnalysis: (a: AnalysisResult | null) => void;
   onOpenGuide: () => void;
+  onNewCase: () => void;
+  onOpenLibrary: () => void;
 }) {
   const { language, copy } = useUiLanguage();
-  const { activeCase, setActiveCase, preview, setPreview, analysis, setAnalysis, onOpenGuide } = props;
+  const { activeCase, setActiveCase, preview, setPreview, analysis, setAnalysis, onOpenGuide, onNewCase, onOpenLibrary } = props;
   const [busy, setBusy] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [caseTitle, setCaseTitle] = useState("");
+  const [caseMetadata, setCaseMetadata] = useState<CaseMetadataDraft>(EMPTY_CASE_METADATA);
   const [anatomyProfileOverride, setAnatomyProfileOverride] = useState("");
   const [zoom, setZoom] = useState(1);
   const [contrast, setContrast] = useState(100);
   const [brightness, setBrightness] = useState(100);
+  const [rotation, setRotation] = useState(0);
+  const [flipHorizontal, setFlipHorizontal] = useState(false);
+  const [flipVertical, setFlipVertical] = useState(false);
+  const [dicomProfile, setDicomProfile] = useState<DicomViewerProfile | null>(null);
+  const [dicomFrame, setDicomFrame] = useState(0);
+  const [windowCenter, setWindowCenter] = useState<number | undefined>();
+  const [windowWidth, setWindowWidth] = useState<number | undefined>();
+  const [dicomInvert, setDicomInvert] = useState(false);
   const [showAnn, setShowAnn] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [showConf, setShowConf] = useState(true);
   const [annotationTool, setAnnotationTool] = useState<AnnotationTool>("select");
+  const [annotationFilter, setAnnotationFilter] = useState<AnnotationWorkspaceFilter>({ origin: "all", reviewStatus: "all", minimumAiConfidence: 0 });
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [selectedResultCardId, setSelectedResultCardId] = useState<string | null>(null);
   const [selectedReportStatementId, setSelectedReportStatementId] = useState<string | null>(null);
   const [sideTab, setSideTab] = useState<WorkspaceTab>("AI Output");
   const [error, setError] = useState("");
   const [advancedAnalysisOpen, setAdvancedAnalysisOpen] = useState(false);
+  const [annotationHistory, setAnnotationHistory] = useState(() => createAnnotationHistory([]));
   const importSectionRef = useRef<HTMLElement | null>(null);
   const caseLabelRef = useRef<HTMLInputElement | null>(null);
   const analysisSectionRef = useRef<HTMLElement | null>(null);
@@ -515,18 +552,47 @@ function ReadingRoom(props: {
   const activeImage = activeStudyImageClient(activeCase);
   const activeImageIndex = activeImage ? studyImages.findIndex(image => image.image_id === activeImage.image_id) : -1;
   const allAnnotations = preferredAnnotations(activeCase?.annotations, analysis?.annotations);
-  const currentAnnotations = allAnnotations.filter(annotation => annotationBelongsToImage(annotation, activeImage, activeImageIndex === 0, studyImages));
-  const overlayAnnotations = currentAnnotations.filter(annotation => annotation.source !== "fallback heuristic");
+  const currentAnnotations = allAnnotations.filter(annotation => annotationBelongsToImage(annotation, activeImage, activeImageIndex === 0, studyImages) && Number(annotation.source_frame_number || 0) === dicomFrame);
+  const filteredAnnotations = filterWorkspaceAnnotations(currentAnnotations, annotationFilter);
+  const overlayAnnotations = filteredAnnotations.filter(annotation => annotation.source !== "fallback heuristic");
   const annotationsRef = useRef<Annotation[]>(allAnnotations);
   const annotationSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const annotationHistoryRef = useRef(annotationHistory);
+  const activeImageIsDicom = Boolean(activeImage?.is_dicom || activeImage?.source_path?.toLowerCase().match(/\.(dcm|dicom)$/) || String(activeImage?.format || "").toUpperCase() === "DICOM");
+  const displayedPreview = activeCase && activeImage && activeImageIsDicom
+    ? dicomPreviewUrl(activeCase.case_id, activeImage.image_id, dicomFrame, windowCenter, windowWidth, dicomInvert)
+    : preview;
 
   useEffect(() => {
     setCaseTitle(activeCase?.title || "");
+    setCaseMetadata(caseMetadataDraft(activeCase?.metadata || {}));
   }, [activeCase?.case_id]);
 
   useEffect(() => {
     annotationsRef.current = allAnnotations;
   }, [allAnnotations]);
+
+  useEffect(() => {
+    const history = createAnnotationHistory(preferredAnnotations(activeCase?.annotations, activeCase?.analysis?.annotations));
+    annotationHistoryRef.current = history;
+    setAnnotationHistory(history);
+  }, [activeCase?.case_id]);
+
+  useEffect(() => { annotationHistoryRef.current = annotationHistory; }, [annotationHistory]);
+
+  useEffect(() => {
+    setDicomProfile(null);
+    setDicomFrame(0);
+    setWindowCenter(undefined);
+    setWindowWidth(undefined);
+    setDicomInvert(false);
+    if (!activeCase || !activeImage || !activeImageIsDicom) return;
+    api.dicomViewerProfile(activeCase.case_id, activeImage.image_id).then(profile => {
+      setDicomProfile(profile);
+      setWindowCenter(profile.default_window?.center);
+      setWindowWidth(profile.default_window?.width);
+    }).catch(exc => setError(String(exc)));
+  }, [activeCase?.case_id, activeImage?.image_id, activeImageIsDicom]);
 
   function revision(action: string, note: string) {
     return { action, timestamp: new Date().toISOString(), actor: "local reviewer", note };
@@ -552,25 +618,34 @@ function ReadingRoom(props: {
     annotationSaveQueueRef.current = annotationSaveQueueRef.current
       .catch(() => undefined)
       .then(async () => { await api.saveCase(nextCase); })
-      .catch(exc => { setError(`Annotation belum tersimpan: ${String(exc)}`); });
+      .catch(exc => { setError(`${language === "en" ? "Annotation was not saved" : "Anotasi belum tersimpan"}: ${String(exc)}`); });
     await annotationSaveQueueRef.current;
+  }
+
+  function recordAnnotationHistory(nextAnnotations: Annotation[]) {
+    setAnnotationHistory(current => commitAnnotationChange(current, nextAnnotations));
+  }
+
+  function restoreAnnotationHistory(direction: "undo" | "redo") {
+    const next = direction === "undo" ? undoAnnotationChange(annotationHistoryRef.current) : redoAnnotationChange(annotationHistoryRef.current);
+    if (next === annotationHistoryRef.current) return;
+    annotationHistoryRef.current = next;
+    setAnnotationHistory(next);
+    setSelectedAnnotationId(null);
+    void saveAnnotations(next.present);
   }
 
   async function saveCaseIdentity() {
     if (!activeCase) return;
-    const title = caseTitle.trim();
-    if (!title) {
-      setError("Isi NPM atau nama pasien sebagai nama case.");
-      return;
-    }
+    const title = caseTitle.trim() || caseMetadata.localRecordId.trim() || activeCase.title;
     setBusy(true);
     setError("");
     try {
-      const saved = await api.saveCase({ ...activeCase, title });
+      const saved = await api.saveCase({ ...activeCase, title, metadata: mergeCaseMetadata(activeCase.metadata, caseMetadata) });
       setActiveCase(saved);
       setCaseTitle(saved.title);
     } catch (exc) {
-      setError(`Nama case belum tersimpan: ${String(exc)}`);
+      setError(`${language === "en" ? "Case identity was not saved" : "Identitas kasus belum tersimpan"}: ${String(exc)}`);
     } finally {
       setBusy(false);
     }
@@ -582,6 +657,19 @@ function ReadingRoom(props: {
       ...patch,
       revision_history: [...(annotation.revision_history || []), revision(action, note)]
     } : annotation);
+    recordAnnotationHistory(next);
+    void saveAnnotations(next);
+  }
+
+  function reviewAnnotationBatch(ids: string[], status: AnnotationReviewStatus) {
+    const selected = new Set(ids);
+    if (!selected.size) return;
+    const next = annotationsRef.current.map(annotation => selected.has(annotation.id) ? {
+      ...annotation,
+      review_status: status,
+      revision_history: [...(annotation.revision_history || []), revision("reviewed", `Reviewer marked visible AI candidate ${status}.`)]
+    } : annotation);
+    recordAnnotationHistory(next);
     void saveAnnotations(next);
   }
 
@@ -615,6 +703,7 @@ function ReadingRoom(props: {
       linked_report_statement_id: "",
       source_image_id: String(activeImage?.image_id || activeCase.metadata?.SOPInstanceUID || `${activeCase.case_id}:0`),
       source_image_index: activeImage?.index ?? 0,
+      source_frame_number: dicomFrame,
       source_view: String(activeImage?.view || activeCase.metadata?.ViewPosition || ""),
       source_series_id: String(activeImage?.series_id || activeCase.metadata?.SeriesInstanceUID || ""),
       revision_history: [revision("created", `Manual ${coordinate.type} created in the Reading Room.`)]
@@ -623,7 +712,9 @@ function ReadingRoom(props: {
     setAnnotationTool("select");
     setShowAnn(true);
     setSideTab("Annotations");
-    void saveAnnotations([...annotationsRef.current, annotation]);
+    const next = [...annotationsRef.current, annotation];
+    recordAnnotationHistory(next);
+    void saveAnnotations(next);
   }
 
   function deleteManualAnnotation(id: string) {
@@ -635,7 +726,9 @@ function ReadingRoom(props: {
       annotation_refs: textList(card.annotation_refs).filter(ref => ref !== id)
     }));
     setSelectedAnnotationId(null);
-    void saveAnnotations(annotationsRef.current.filter(item => item.id !== id), nextCards);
+    const next = annotationsRef.current.filter(item => item.id !== id);
+    recordAnnotationHistory(next);
+    void saveAnnotations(next, nextCards);
   }
 
   function selectAnnotation(id: string | null) {
@@ -663,8 +756,21 @@ function ReadingRoom(props: {
       reportStatementId,
       revision("edited", "Grounded evidence links updated by reviewer.")
     );
+    recordAnnotationHistory(linked.annotations);
     void saveAnnotations(linked.annotations, linked.cards);
   }
+
+  useEffect(() => {
+    function onHistoryShortcut(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
+      event.preventDefault();
+      restoreAnnotationHistory(event.shiftKey ? "redo" : "undo");
+    }
+    window.addEventListener("keydown", onHistoryShortcut);
+    return () => window.removeEventListener("keydown", onHistoryShortcut);
+  }, []);
 
   async function onFiles(files?: FileList | null) {
     const selectedFiles = files ? Array.from(files) : [];
@@ -672,11 +778,18 @@ function ReadingRoom(props: {
     setBusy(true);
     setError("");
     try {
-      const uploaded = await api.upload(selectedFiles[0], activeCase ? "" : caseTitle.trim());
+      const uploaded = await api.upload(selectedFiles[0], activeCase ? "" : (caseTitle.trim() || caseMetadata.localRecordId.trim()));
       let nextCase = uploaded.case;
       for (const file of selectedFiles.slice(1)) {
         const appended = await api.addStudyImage(nextCase.case_id, file);
         nextCase = appended.case;
+      }
+      if (!activeCase) {
+        nextCase = await api.saveCase({
+          ...nextCase,
+          title: caseTitle.trim() || caseMetadata.localRecordId.trim() || nextCase.title,
+          metadata: mergeCaseMetadata(nextCase.metadata, caseMetadata),
+        });
       }
       setActiveCase(nextCase);
       setPreview(uploaded.preview_data_url);
@@ -712,21 +825,30 @@ function ReadingRoom(props: {
     }
   }
 
-  async function run() {
+  async function run(instruction = prompt) {
     if (!activeCase) return;
     setBusy(true);
     setError("");
     try {
-      const result = await api.analyze(activeCase.case_id, prompt, language, anatomyProfileOverride);
+      const result = await api.analyze(activeCase.case_id, instruction, language, anatomyProfileOverride);
       const refreshed = await api.caseDetail(activeCase.case_id);
       setAnalysis(result);
       setActiveCase(refreshed);
+      const history = createAnnotationHistory(preferredAnnotations(refreshed.annotations, refreshed.analysis?.annotations));
+      annotationHistoryRef.current = history;
+      setAnnotationHistory(history);
       setSideTab("AI Output");
     } catch (exc) {
       setError(String(exc));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function rerunWithValidationFeedback() {
+    const validationPrompt = buildValidationRerunPrompt(currentAnnotations, language);
+    const combinedPrompt = [prompt.trim(), validationPrompt].filter(Boolean).join("\n\n");
+    await run(combinedPrompt);
   }
 
   const routeNeedsConfirmation = analysis?.anatomy_route?.support_status === "routing_required" || analysis?.anatomy_route?.profile_id === "general";
@@ -775,25 +897,41 @@ function ReadingRoom(props: {
       <div className="readingWorkflow" aria-label={language === "en" ? "Review progress" : "Progres peninjauan"}>
         <div className="readingWorkflowIdentity"><span>{language === "en" ? "Current case" : "Kasus saat ini"}</span><b>{activeCase?.title || (language === "en" ? "No case loaded" : "Belum ada kasus")}</b><small>{nextStepText}</small></div>
         <div className="readingSteps">{workflowStages.map((stage, index) => <button type="button" className={`${stage.done ? "done" : ""} ${workflowCurrentIndex === index ? "current" : ""}`} key={stage.label} onClick={() => openWorkflowStage(index)} disabled={!stage.enabled} aria-current={workflowCurrentIndex === index ? "step" : undefined} aria-label={`${stage.label}: ${stage.done ? (language === "en" ? "complete" : "selesai") : !stage.enabled ? (language === "en" ? "not available yet" : "belum tersedia") : workflowCurrentIndex === index ? (language === "en" ? "next action" : "tindakan berikutnya") : (language === "en" ? "available" : "tersedia")}`}><span>{stage.done ? <CheckCircle2 size={15} /> : index + 1}</span><b>{stage.label}</b></button>)}</div>
-        <button className="guideShortcut" onClick={onOpenGuide}><BookOpen size={16} />{language === "en" ? "Open guide" : "Buka panduan"}</button>
+        <div className="readingWorkflowActions">
+          {activeCase && <button className="primaryAction" onClick={onNewCase}><Plus size={16} />{language === "en" ? "New case" : "Kasus baru"}</button>}
+          <button onClick={onOpenLibrary}><Library size={16} />{language === "en" ? "Cases" : "Daftar kasus"}</button>
+          <button className="guideShortcut" onClick={onOpenGuide} aria-label={language === "en" ? "Open guide" : "Buka panduan"} title={language === "en" ? "Open guide" : "Buka panduan"}><BookOpen size={16} /></button>
+        </div>
       </div>
       <aside className="panel casebar">
         <section className="guidedAction" ref={importSectionRef}>
-          <div className="guidedActionHeader"><span>1</span><div><h2>{language === "en" ? "Import study" : "Impor studi"}</h2><p>{language === "en" ? "Add a local label, then choose one or more images." : "Isi label lokal, lalu pilih satu atau beberapa gambar."}</p></div></div>
-          <label className="compactField">{language === "en" ? "Case label" : "Label kasus"}
-            <input ref={caseLabelRef} value={caseTitle} onChange={event => setCaseTitle(event.target.value)} placeholder={language === "en" ? "e.g. 23123456 / Patient A" : "contoh: 23123456 / Pasien A"} disabled={busy} />
+          <div className="guidedActionHeader"><span>1</span><div><h2>{activeCase ? (language === "en" ? "Current study" : "Studi saat ini") : (language === "en" ? "Import study" : "Impor studi")}</h2><p>{activeCase ? (language === "en" ? "Add images here, or use New case above to start separately." : "Tambahkan gambar di sini, atau gunakan Kasus baru di atas untuk memulai terpisah.") : (language === "en" ? "Add identifiers and choose one or more images." : "Tambahkan identitas lalu pilih satu atau beberapa gambar.")}</p></div></div>
+          <label className="compactField">{language === "en" ? "Case label (optional)" : "Label kasus (opsional)"}
+            <input ref={caseLabelRef} value={caseTitle} onChange={event => setCaseTitle(event.target.value)} placeholder={language === "en" ? "e.g. Teaching chest case" : "contoh: Kasus toraks pembelajaran"} disabled={busy} />
           </label>
-          <label className="drop"><Upload size={22} /><span>{language === "en" ? "Choose PNG, JPG, or DICOM" : "Pilih PNG, JPG, atau DICOM"}</span><small>{language === "en" ? "Multiple images become one study" : "Beberapa gambar menjadi satu studi"}</small><input type="file" multiple accept=".png,.jpg,.jpeg,.dcm,.dicom" onChange={e => onFiles(e.target.files)} /></label>
+          <details className="caseMetadataEditor" open={!activeCase && Boolean(caseMetadata.localRecordId || caseMetadata.patientId)}>
+            <summary>{language === "en" ? "More case details" : "Detail kasus lainnya"}</summary>
+            <div className="caseMetadataGrid">
+              <label>{language === "en" ? "Local record / NPM" : "Nomor lokal / NPM"}<input value={caseMetadata.localRecordId} onChange={event => setCaseMetadata(current => ({ ...current, localRecordId: event.target.value }))} placeholder="NPM-23001" /></label>
+              <label>{language === "en" ? "Patient ID" : "ID pasien"}<input value={caseMetadata.patientId} onChange={event => setCaseMetadata(current => ({ ...current, patientId: event.target.value }))} placeholder="PX-104" /></label>
+              <label>{language === "en" ? "Accession number" : "Nomor akses"}<input value={caseMetadata.accessionNumber} onChange={event => setCaseMetadata(current => ({ ...current, accessionNumber: event.target.value }))} placeholder="ACC-2026-001" /></label>
+              <label>{language === "en" ? "Study description" : "Deskripsi studi"}<input value={caseMetadata.studyDescription} onChange={event => setCaseMetadata(current => ({ ...current, studyDescription: event.target.value }))} placeholder="Chest PA" /></label>
+              <label className="wideField">{language === "en" ? "Clinical indication" : "Indikasi klinis"}<textarea value={caseMetadata.clinicalIndication} onChange={event => setCaseMetadata(current => ({ ...current, clinicalIndication: event.target.value }))} placeholder={language === "en" ? "Short reason for the examination" : "Alasan singkat pemeriksaan"} /></label>
+              <label className="wideField">{language === "en" ? "Local notes" : "Catatan lokal"}<textarea value={caseMetadata.notes} onChange={event => setCaseMetadata(current => ({ ...current, notes: event.target.value }))} placeholder={language === "en" ? "Teaching set, protocol, or internal note" : "Set pembelajaran, protokol, atau catatan internal"} /></label>
+            </div>
+            <small>{language === "en" ? "Stored locally with the case. Imported DICOM identifiers remain intact." : "Disimpan lokal bersama kasus. Identitas DICOM hasil impor tetap dipertahankan."}</small>
+          </details>
+          <label className="drop"><Upload size={22} /><span>{activeCase ? (language === "en" ? "Add PNG, JPG, or DICOM" : "Tambah PNG, JPG, atau DICOM") : (language === "en" ? "Choose PNG, JPG, or DICOM" : "Pilih PNG, JPG, atau DICOM")}</span><small>{language === "en" ? "Multiple images become one study" : "Beberapa gambar menjadi satu studi"}</small><input type="file" multiple accept=".png,.jpg,.jpeg,.dcm,.dicom" onChange={e => onFiles(e.target.files)} /></label>
           {activeCase && <div className="inlineSuccess"><CheckCircle2 size={16} /><span>{language === "en" ? "Study loaded" : "Studi sudah dimuat"}</span></div>}
-          {activeCase && <button onClick={saveCaseIdentity} disabled={busy}>{language === "en" ? "Save changed label" : "Simpan perubahan label"}</button>}
+          {activeCase && <button onClick={saveCaseIdentity} disabled={busy}>{language === "en" ? "Save case details" : "Simpan detail kasus"}</button>}
         </section>
 
         <section className={`guidedAction ${!activeCase ? "mutedAction" : ""} ${routeNeedsConfirmation ? "needsAttention" : ""}`} ref={analysisSectionRef}>
           <div className="guidedActionHeader"><span>2</span><div><h2>{language === "en" ? "Run analysis" : "Jalankan analisis"}</h2><p>{language === "en" ? "Automatic body-area detection is recommended." : "Deteksi area tubuh otomatis direkomendasikan."}</p></div></div>
           {routeNeedsConfirmation && <div className="nextAction" role="status">{language === "en" ? "Body area needs confirmation. Choose it below before running the analysis again." : "Area tubuh perlu dikonfirmasi. Pilih area di bawah sebelum menjalankan analisis ulang."}</div>}
-          <button ref={runAnalysisRef} className="primaryAction runAnalysis" onClick={run} disabled={!activeCase || busy}><Bot size={17} />{busy ? copy.processing : copy.runWorkflow}</button>
+          <button ref={runAnalysisRef} className="primaryAction runAnalysis" onClick={() => run()} disabled={!activeCase || busy}><Bot size={17} />{busy ? copy.processing : copy.runWorkflow}</button>
           <details className="advancedOptions" open={advancedAnalysisOpen || routeNeedsConfirmation} onToggle={event => setAdvancedAnalysisOpen(event.currentTarget.open)}>
-            <summary>{language === "en" ? "Advanced analysis options" : "Opsi analisis lanjutan"}</summary>
+            <summary>{language === "en" ? "Reading options" : "Opsi analisis lanjutan"}</summary>
             <label className="routeOverride">{language === "en" ? "Body area" : "Area tubuh"}
               <select ref={anatomySelectRef} data-testid="anatomy-profile-override" value={anatomyProfileOverride} onChange={event => setAnatomyProfileOverride(event.target.value)}>
                 <option value="">{language === "en" ? "Automatic detection (recommended)" : "Deteksi otomatis (disarankan)"}</option>
@@ -843,18 +981,34 @@ function ReadingRoom(props: {
             <button aria-label={language === "en" ? "Draw manual bounding box" : "Gambar kotak pembatas manual"} title={language === "en" ? "Draw manual bounding box" : "Gambar kotak pembatas manual"} className={annotationTool === "box" ? "activeTool" : ""} onClick={() => { setAnnotationTool("box"); setShowAnn(true); }} disabled={!preview}><Square size={16} /></button>
             <button aria-label={language === "en" ? "Place manual point" : "Tempatkan titik manual"} title={language === "en" ? "Place manual point" : "Tempatkan titik manual"} className={annotationTool === "point" ? "activeTool" : ""} onClick={() => { setAnnotationTool("point"); setShowAnn(true); }} disabled={!preview}><Crosshair size={16} /></button>
             <button aria-label={language === "en" ? "Draw manual polygon" : "Gambar poligon manual"} title={language === "en" ? "Draw manual polygon; double-click or press Enter to finish" : "Gambar poligon manual; klik dua kali atau tekan Enter untuk selesai"} className={annotationTool === "polygon" ? "activeTool" : ""} onClick={() => { setAnnotationTool("polygon"); setShowAnn(true); }} disabled={!preview}><Pentagon size={16} /></button>
+            <button aria-label={language === "en" ? "Draw ellipse ROI" : "Gambar ROI elips"} title={language === "en" ? "Draw ellipse ROI" : "Gambar ROI elips"} className={annotationTool === "ellipse" ? "activeTool" : ""} onClick={() => { setAnnotationTool("ellipse"); setShowAnn(true); }} disabled={!preview}><Circle size={16} /></button>
+            <button aria-label={language === "en" ? "Measure length" : "Ukur panjang"} title={language === "en" ? "Measure calibrated length" : "Ukur panjang terkalibrasi"} className={annotationTool === "length" ? "activeTool" : ""} onClick={() => { setAnnotationTool("length"); setShowAnn(true); }} disabled={!preview}><Ruler size={16} /></button>
+            <button aria-label={language === "en" ? "Undo annotation change" : "Urungkan perubahan anotasi"} title="Ctrl+Z" onClick={() => restoreAnnotationHistory("undo")} disabled={!annotationHistory.past.length}><Undo2 size={16} /></button>
+            <button aria-label={language === "en" ? "Redo annotation change" : "Ulangi perubahan anotasi"} title="Ctrl+Shift+Z" onClick={() => restoreAnnotationHistory("redo")} disabled={!annotationHistory.future.length}><Redo2 size={16} /></button>
           </div>
           <div className="toolGroup"><span>{language === "en" ? "View" : "Tampilan"}</span>
-            <button aria-label="Zoom in" title="Zoom in" onClick={() => setZoom(z => Math.min(4, z + 0.2))}><ZoomIn size={16} /></button>
-            <button aria-label="Zoom out" title="Zoom out" onClick={() => setZoom(z => Math.max(0.4, z - 0.2))}><ZoomOut size={16} /></button>
-            <button aria-label="Reset image view" title="Reset image view" onClick={() => { setZoom(1); setContrast(100); setBrightness(100); }}><RotateCcw size={16} /></button>
+            <button aria-label={language === "en" ? "Zoom in" : "Perbesar"} title={language === "en" ? "Zoom in" : "Perbesar"} onClick={() => setZoom(z => Math.min(4, z + 0.2))}><ZoomIn size={16} /></button>
+            <button aria-label={language === "en" ? "Zoom out" : "Perkecil"} title={language === "en" ? "Zoom out" : "Perkecil"} onClick={() => setZoom(z => Math.max(0.4, z - 0.2))}><ZoomOut size={16} /></button>
+            <button aria-label={language === "en" ? "Rotate image" : "Putar gambar"} title={language === "en" ? "Rotate 90°" : "Putar 90°"} onClick={() => setRotation(value => (value + 90) % 360)}><RotateCw size={16} /></button>
+            <button aria-label={language === "en" ? "Flip image horizontally" : "Balik gambar horizontal"} onClick={() => setFlipHorizontal(value => !value)}><FlipHorizontal2 size={16} /></button>
+            <button aria-label={language === "en" ? "Flip image vertically" : "Balik gambar vertikal"} onClick={() => setFlipVertical(value => !value)}><FlipVertical2 size={16} /></button>
+            <button aria-label={language === "en" ? "Reset image view" : "Atur ulang tampilan gambar"} title={language === "en" ? "Reset image view" : "Atur ulang tampilan gambar"} onClick={() => { setZoom(1); setContrast(100); setBrightness(100); setRotation(0); setFlipHorizontal(false); setFlipVertical(false); setDicomInvert(false); setDicomFrame(0); setWindowCenter(dicomProfile?.default_window?.center); setWindowWidth(dicomProfile?.default_window?.width); }}><RotateCcw size={16} /></button>
           </div>
-          <details className="displayAdjustments"><summary>{language === "en" ? "Image adjustments" : "Atur gambar"}</summary><div><label>Brightness <input type="range" min="50" max="160" value={brightness} onChange={e => setBrightness(Number(e.target.value))} /></label><label>Contrast <input type="range" min="50" max="180" value={contrast} onChange={e => setContrast(Number(e.target.value))} /></label></div></details>
+          <details className="displayAdjustments"><summary>{language === "en" ? "Image adjustments" : "Atur gambar"}</summary><div><label>{language === "en" ? "Brightness" : "Kecerahan"} <input type="range" min="50" max="160" value={brightness} onChange={e => setBrightness(Number(e.target.value))} /></label><label>{language === "en" ? "Contrast" : "Kontras"} <input type="range" min="50" max="180" value={contrast} onChange={e => setContrast(Number(e.target.value))} /></label></div></details>
+        </div>}
+        {dicomProfile && <div className="dicomViewerControls">
+          <b>DICOM</b>
+          {dicomProfile.number_of_frames > 1 && <label>{language === "en" ? "Frame" : "Frame"}<input type="range" min="0" max={dicomProfile.number_of_frames - 1} value={dicomFrame} onChange={event => setDicomFrame(Number(event.target.value))} /><span>{dicomFrame + 1}/{dicomProfile.number_of_frames}</span></label>}
+          <label>{language === "en" ? "Window preset" : "Preset window"}<select value={windowCenter != null && windowWidth != null ? `${windowCenter}:${windowWidth}` : "auto"} onChange={event => { if (event.target.value === "auto") { setWindowCenter(undefined); setWindowWidth(undefined); } else { const [center, width] = event.target.value.split(":").map(Number); setWindowCenter(center); setWindowWidth(width); } }}><option value="auto">Auto VOI LUT</option>{dicomProfile.window_presets.map(preset => <option key={`${preset.name}-${preset.center}-${preset.width}`} value={`${preset.center}:${preset.width}`}>{preset.name} · C {preset.center} / W {preset.width}</option>)}</select></label>
+          <label>C<input type="number" value={windowCenter ?? ""} onChange={event => setWindowCenter(event.target.value === "" ? undefined : Number(event.target.value))} /></label>
+          <label>W<input type="number" min="1" value={windowWidth ?? ""} onChange={event => setWindowWidth(event.target.value === "" ? undefined : Number(event.target.value))} /></label>
+          <label><input type="checkbox" checked={dicomInvert} onChange={event => setDicomInvert(event.target.checked)} />{language === "en" ? "Invert" : "Inversi"}</label>
+          {dicomProfile.pixel_spacing && <small>{language === "en" ? "Calibrated" : "Terkalibrasi"}: {dicomProfile.pixel_spacing.row_mm} × {dicomProfile.pixel_spacing.column_mm} mm/px</small>}
         </div>}
         <div className="imageStage">
-          {preview ? <div className="imageWrap" style={{ transform: `scale(${zoom})`, filter: `brightness(${brightness}%) contrast(${contrast}%)` }}>
+          {displayedPreview ? <div className="imageWrap" style={{ transform: `scale(${zoom}) rotate(${rotation}deg) scaleX(${flipHorizontal ? -1 : 1}) scaleY(${flipVertical ? -1 : 1})`, filter: `brightness(${brightness}%) contrast(${contrast}%)` }}>
             <PreviewImageWithOverlay
-              preview={preview}
+              preview={displayedPreview}
               originalImageWidth={Number(activeImage?.width || activeCase?.metadata?.width || activeCase?.metadata?.Columns || 0)}
               originalImageHeight={Number(activeImage?.height || activeCase?.metadata?.height || activeCase?.metadata?.Rows || 0)}
               annotations={showAnn ? overlayAnnotations : []}
@@ -879,7 +1033,7 @@ function ReadingRoom(props: {
         <div className="sideTabs">
           {(["AI Output", "Result Cards", "Annotations", "Report"] as WorkspaceTab[]).map(tab => <button key={tab} className={sideTab === tab ? "active" : ""} onClick={() => setSideTab(tab)}>{tabIcon(tab)}<span>{tab === "AI Output" ? (language === "en" ? "AI summary" : "Ringkasan AI") : tab === "Result Cards" ? (language === "en" ? "Findings" : "Temuan") : tab === "Annotations" ? (language === "en" ? "Annotations" : "Anotasi") : (language === "en" ? "Report" : "Laporan")}</span></button>)}
         </div>
-        <label className="secondaryToolSelect"><span>{language === "en" ? "More tools" : "Alat lainnya"}</span><select value={(["AI Chat", "Trust", "DICOM Safety", "Roadmap"] as WorkspaceTab[]).includes(sideTab) ? sideTab : ""} onChange={event => event.target.value && setSideTab(event.target.value as WorkspaceTab)}><option value="">{language === "en" ? "Choose only when needed…" : "Pilih hanya saat dibutuhkan…"}</option><option value="AI Chat">AI Chat</option><option value="Trust">Trust & provenance</option><option value="DICOM Safety">DICOM Safety</option><option value="Roadmap">Roadmap</option></select></label>
+        <label className="secondaryToolSelect"><span>{language === "en" ? "More tools" : "Alat lainnya"}</span><select value={(["AI Chat", "Trust", "DICOM Safety"] as WorkspaceTab[]).includes(sideTab) ? sideTab : ""} onChange={event => event.target.value && setSideTab(event.target.value as WorkspaceTab)}><option value="">{language === "en" ? "Choose only when needed…" : "Pilih hanya saat dibutuhkan…"}</option>{(["AI Chat", "Trust", "DICOM Safety"] as WorkspaceTab[]).map(tab => <option value={tab} key={tab}>{workspaceTabText(tab, language)}</option>)}</select></label>
         {busy && <div className="warn">{copy.processing}</div>}
         {error && <div className="warn">{error}</div>}
         {sideTab === "AI Output" && (analysis ? <AnalysisView analysis={analysis} /> : <p>{copy.noAnalysis}</p>)}
@@ -896,6 +1050,7 @@ function ReadingRoom(props: {
         {sideTab === "Annotations" && <AnnotationPanel
           activeCase={activeCase}
           annotations={currentAnnotations}
+          pixelSpacing={dicomProfile?.pixel_spacing}
           selectedId={selectedAnnotationId}
           onSelect={selectAnnotation}
           onUpdate={updateAnnotation}
@@ -904,6 +1059,11 @@ function ReadingRoom(props: {
           onLink={linkAnnotation}
           onFocusResultCard={focusResultCard}
           onFocusReport={focusReportStatement}
+          onRerunAI={rerunWithValidationFeedback}
+          rerunBusy={busy}
+          filter={annotationFilter}
+          onFilterChange={setAnnotationFilter}
+          onBatchReview={reviewAnnotationBatch}
         />}
         {sideTab === "Report" && <ReportPage
           activeCase={activeCase}
@@ -916,7 +1076,6 @@ function ReadingRoom(props: {
         {sideTab === "AI Chat" && <ChatPanel activeCase={activeCase} setActiveCase={setActiveCase} />}
         {sideTab === "Trust" && <TrustPanel activeCase={activeCase} analysis={analysis} />}
         {sideTab === "DICOM Safety" && <DicomSafetyPanel activeCase={activeCase} image={activeImage} />}
-        {sideTab === "Roadmap" && <RoadmapNext />}
         </>}
       </aside>
     </div>
@@ -930,7 +1089,6 @@ function tabIcon(tab: WorkspaceTab) {
   if (tab === "AI Chat") return <MessageSquare size={15} />;
   if (tab === "Trust") return <ShieldCheck size={15} />;
   if (tab === "DICOM Safety") return <ShieldCheck size={15} />;
-  if (tab === "Roadmap") return <BookOpen size={15} />;
   return <Bot size={15} />;
 }
 
@@ -979,6 +1137,17 @@ function friendlyAnalysisMode(value: unknown, language: UiLanguage) {
   if (mode === "openai-compatible") return language === "en" ? "Connected AI model" : "Model AI tersambung";
   if (mode === "medrax-tool-pipeline") return language === "en" ? "AI tool pipeline" : "Rangkaian alat AI";
   return friendlyTechnicalText(value, language).replaceAll("_", " ");
+}
+
+function reviewStatusText(value: unknown, language: UiLanguage) {
+  const key = String(value || "unreviewed");
+  if (language === "en") return key.replaceAll("_", " ");
+  return ({ unreviewed: "belum ditinjau", accepted: "diterima", rejected: "ditolak", uncertain: "belum pasti", needs_follow_up: "perlu tindak lanjut" } as Record<string, string>)[key] || key.replaceAll("_", " ");
+}
+
+function workspaceTabText(tab: WorkspaceTab, language: UiLanguage) {
+  if (language === "en") return tab;
+  return ({ "AI Output": "Output AI", "Result Cards": "Kartu Hasil", Annotations: "Anotasi", Report: "Laporan", "AI Chat": "Chat AI", Trust: "Kepercayaan & asal", "DICOM Safety": "Keamanan DICOM" } as Record<WorkspaceTab, string>)[tab];
 }
 
 function WorkspaceStats({ activeCase, analysis }: { activeCase: CaseRecord | null; analysis: AnalysisResult | null }) {
@@ -1115,6 +1284,15 @@ function hasBoxCoordinate(annotation: Annotation) {
   );
 }
 
+function hasEllipseCoordinate(annotation: Annotation) {
+  const coordinate = annotation.coordinate;
+  return coordinate?.type === "ellipse" && coordinate.width > 0 && coordinate.height > 0;
+}
+
+function hasLengthCoordinate(annotation: Annotation) {
+  return annotation.coordinate?.type === "length" && coordinatePoints(annotation.coordinate).length === 2;
+}
+
 function InteractiveAnnotationOverlay(props: {
   annotations: Annotation[];
   originalImageWidth: number;
@@ -1183,7 +1361,8 @@ function InteractiveAnnotationOverlay(props: {
       return;
     }
     dragRef.current = { kind: "draw", startX: p.x, startY: p.y };
-    setDraft({ coordinate: { type: "bbox", x: p.x, y: p.y, width: 0, height: 0, coordinate_space: "original_image" } });
+    const type = tool === "ellipse" ? "ellipse" : tool === "length" ? "length" : "bbox";
+    setDraft({ coordinate: { type, x: p.x, y: p.y, width: 0, height: 0, points: type === "length" ? [[p.x, p.y], [p.x, p.y]] : [], coordinate_space: "original_image" } });
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -1198,7 +1377,7 @@ function InteractiveAnnotationOverlay(props: {
   function startMove(event: React.PointerEvent<SVGElement>, annotation: Annotation) {
     event.stopPropagation();
     onSelect(annotation.id);
-    if (tool !== "select" || annotation.locked || !(hasBoxCoordinate(annotation) || hasPointCoordinate(annotation) || hasPolygonCoordinate(annotation))) return;
+    if (tool !== "select" || annotation.locked || !(hasBoxCoordinate(annotation) || hasEllipseCoordinate(annotation) || hasLengthCoordinate(annotation) || hasPointCoordinate(annotation) || hasPolygonCoordinate(annotation))) return;
     const p = point(event);
     dragRef.current = { kind: "move", id: annotation.id, startX: p.x, startY: p.y, startCoordinate: { ...annotation.coordinate } };
     setDraft({ id: annotation.id, coordinate: { ...annotation.coordinate } });
@@ -1229,12 +1408,14 @@ function InteractiveAnnotationOverlay(props: {
     if (!drag) return;
     const p = point(event);
     if (drag.kind === "draw") {
+      const type = draft?.coordinate.type || "bbox";
       setDraft({ coordinate: {
-        type: "bbox",
+        type,
         x: Math.min(drag.startX, p.x),
         y: Math.min(drag.startY, p.y),
         width: Math.abs(p.x - drag.startX),
         height: Math.abs(p.y - drag.startY),
+        points: type === "length" ? [[drag.startX, drag.startY], [p.x, p.y]] : [],
         coordinate_space: "original_image"
       } });
       return;
@@ -1265,6 +1446,15 @@ function InteractiveAnnotationOverlay(props: {
         setDraft({ id: drag.id, coordinate: { ...start, ...polygonBounds(movedPoints), points: movedPoints } });
         return;
       }
+      if (start.type === "length") {
+        const points = coordinatePoints(start);
+        const bounds = polygonBounds(points);
+        const dx = Math.max(-bounds.x, Math.min(originalWidth - bounds.x - bounds.width, p.x - drag.startX));
+        const dy = Math.max(-bounds.y, Math.min(originalHeight - bounds.y - bounds.height, p.y - drag.startY));
+        const movedPoints = points.map(item => [item[0] + dx, item[1] + dy] as [number, number]);
+        setDraft({ id: drag.id, coordinate: { ...start, ...polygonBounds(movedPoints), points: movedPoints } });
+        return;
+      }
       const x = Math.max(0, Math.min(originalWidth - start.width, start.x + p.x - drag.startX));
       const y = Math.max(0, Math.min(originalHeight - start.height, start.y + p.y - drag.startY));
       setDraft({ id: drag.id, coordinate: { ...start, x, y } });
@@ -1287,7 +1477,9 @@ function InteractiveAnnotationOverlay(props: {
     if (svgRef.current?.hasPointerCapture(event.pointerId)) svgRef.current.releasePointerCapture(event.pointerId);
     dragRef.current = null;
     if (drag.kind === "draw") {
-      if (draft.coordinate.width >= 4 && draft.coordinate.height >= 4) onCreate(draft.coordinate, originalWidth, originalHeight);
+      const validLength = draft.coordinate.type === "length" && Math.hypot(draft.coordinate.width, draft.coordinate.height) >= 4;
+      const validArea = draft.coordinate.type !== "length" && draft.coordinate.width >= 4 && draft.coordinate.height >= 4;
+      if (validLength || validArea) onCreate(draft.coordinate, originalWidth, originalHeight);
     } else if (drag.id) {
       if (draft.coordinate.type === "polygon" && !isValidPolygonPoints(coordinatePoints(draft.coordinate))) {
         setDraft(null);
@@ -1341,7 +1533,8 @@ function InteractiveAnnotationOverlay(props: {
       const p = displayPoint(annotation, coordinate);
       const selected = annotation.id === selectedId;
       const color = annotationColor(annotation);
-      const label = `${showLabels ? annotation.label || "point" : ""}${showLabels && showConf ? " " : ""}${showConf ? Number(annotation.confidence).toFixed(2) : ""}`;
+      const confidenceLabel = annotationOrigin(annotation) === "ai" ? `${annotationConfidencePercent(annotation.confidence)}%` : annotationOrigin(annotation) === "reviewer" ? "manual" : "guide";
+      const label = `${showLabels ? annotation.label || "point" : ""}${showLabels && showConf ? " " : ""}${showConf ? confidenceLabel : ""}`;
       return <g key={annotation.id} className={annotation.review_status === "rejected" ? "rejectedAnnotation" : ""}>
         <circle className={`annotationPoint ${selected ? "selected" : ""}`} cx={p.x} cy={p.y} r={selected ? 8 : 6} stroke={color} onPointerDown={event => startMove(event, annotation)} />
         <line className="annotationPointCross" x1={p.x - 11} y1={p.y} x2={p.x + 11} y2={p.y} stroke={color} />
@@ -1354,11 +1547,32 @@ function InteractiveAnnotationOverlay(props: {
       const points = displayShapePoints(annotation, coordinate);
       const selected = annotation.id === selectedId;
       const color = annotationColor(annotation);
-      const label = `${showLabels ? annotation.label || "polygon" : ""}${showLabels && showConf ? " " : ""}${showConf ? Number(annotation.confidence).toFixed(2) : ""}`;
+      const confidenceLabel = annotationOrigin(annotation) === "ai" ? `${annotationConfidencePercent(annotation.confidence)}%` : annotationOrigin(annotation) === "reviewer" ? "manual" : "guide";
+      const label = `${showLabels ? annotation.label || "polygon" : ""}${showLabels && showConf ? " " : ""}${showConf ? confidenceLabel : ""}`;
       return <g key={annotation.id} className={annotation.review_status === "rejected" ? "rejectedAnnotation" : ""}>
         <polygon className={`annotationPolygon ${selected ? "selected" : ""}`} points={points.map(item => item.join(",")).join(" ")} stroke={color} onPointerDown={event => startMove(event, annotation)} />
         {label && <text className="annotationLabel" x={points[0][0] + 5} y={Math.max(14, points[0][1] - 7)} fill={color}>{label}</text>}
         {selected && !annotation.locked && points.map((item, index) => <circle key={index} className="polygonVertex" cx={item[0]} cy={item[1]} r={5} fill={color} onPointerDown={event => startVertex(event, annotation, index)} />)}
+      </g>;
+    })}
+    {annotations.filter(annotation => annotation.visible !== false && hasLengthCoordinate(annotation)).map(annotation => {
+      const coordinate = draft?.id === annotation.id ? draft.coordinate : annotation.coordinate;
+      const points = displayShapePoints(annotation, coordinate);
+      const selected = annotation.id === selectedId;
+      const color = annotationColor(annotation);
+      return <g key={annotation.id} className={annotation.review_status === "rejected" ? "rejectedAnnotation" : ""}>
+        <line className={`annotationLength ${selected ? "selected" : ""}`} x1={points[0][0]} y1={points[0][1]} x2={points[1][0]} y2={points[1][1]} stroke={color} onPointerDown={event => startMove(event, annotation)} />
+        <circle cx={points[0][0]} cy={points[0][1]} r={4} fill={color} /><circle cx={points[1][0]} cy={points[1][1]} r={4} fill={color} />
+        {showLabels && <text className="annotationLabel" x={(points[0][0] + points[1][0]) / 2 + 5} y={(points[0][1] + points[1][1]) / 2 - 5} fill={color}>{annotation.label}</text>}
+      </g>;
+    })}
+    {annotations.filter(annotation => annotation.visible !== false && hasEllipseCoordinate(annotation)).map(annotation => {
+      const box = displayCoordinate(annotation)!;
+      const selected = annotation.id === selectedId;
+      const color = annotationColor(annotation);
+      return <g key={annotation.id} className={annotation.review_status === "rejected" ? "rejectedAnnotation" : ""}>
+        <ellipse className={`annotationEllipse ${selected ? "selected" : ""}`} cx={box.x + box.width / 2} cy={box.y + box.height / 2} rx={box.width / 2} ry={box.height / 2} stroke={color} onPointerDown={event => startMove(event, annotation)} />
+        {showLabels && <text className="annotationLabel" x={box.x + 5} y={Math.max(14, box.y - 6)} fill={color}>{annotation.label}</text>}
       </g>;
     })}
     {annotations.filter(annotation => annotation.visible !== false && hasBoxCoordinate(annotation)).map(annotation => {
@@ -1366,8 +1580,8 @@ function InteractiveAnnotationOverlay(props: {
       if (!box) return null;
       const selected = annotation.id === selectedId;
       const color = annotationColor(annotation);
-      const confidence = typeof annotation.confidence === "number" ? annotation.confidence.toFixed(2) : "n/a";
-      const label = `${showLabels ? annotation.label || "annotation" : ""}${showLabels && showConf ? " " : ""}${showConf ? confidence : ""}`;
+      const confidenceLabel = annotationOrigin(annotation) === "ai" ? `${annotationConfidencePercent(annotation.confidence)}%` : annotationOrigin(annotation) === "reviewer" ? "manual" : "guide";
+      const label = `${showLabels ? annotation.label || "annotation" : ""}${showLabels && showConf ? " " : ""}${showConf ? confidenceLabel : ""}`;
       const handles = [
         ["nw", box.x, box.y], ["ne", box.x + box.width, box.y],
         ["sw", box.x, box.y + box.height], ["se", box.x + box.width, box.y + box.height]
@@ -1392,6 +1606,11 @@ function InteractiveAnnotationOverlay(props: {
     })}
     {draft && !draft.id && (() => {
       const box = { x: draft.coordinate.x * displayWidth / originalWidth, y: draft.coordinate.y * displayHeight / originalHeight, width: draft.coordinate.width * displayWidth / originalWidth, height: draft.coordinate.height * displayHeight / originalHeight };
+      if (draft.coordinate.type === "length") {
+        const points = coordinatePoints(draft.coordinate).map(item => [item[0] * displayWidth / originalWidth, item[1] * displayHeight / originalHeight]);
+        return <line className="annotationLength manualDraft" x1={points[0]?.[0]} y1={points[0]?.[1]} x2={points[1]?.[0]} y2={points[1]?.[1]} />;
+      }
+      if (draft.coordinate.type === "ellipse") return <ellipse className="annotationEllipse manualDraft" cx={box.x + box.width / 2} cy={box.y + box.height / 2} rx={box.width / 2} ry={box.height / 2} />;
       return <rect className="annotationRect manualDraft" x={box.x} y={box.y} width={box.width} height={box.height} />;
     })()}
     {polygonDraft.length > 0 && <g className="polygonDraft">
@@ -1489,7 +1708,7 @@ function ResultCardsPanel(props: {
           setAnalysis(savedCase.analysis || syncedAnalysis);
         }
       })
-      .catch(exc => { setSaveError(`Result card belum tersimpan: ${String(exc)}`); });
+      .catch(exc => { setSaveError(`${language === "en" ? "Result card was not saved" : "Kartu hasil belum tersimpan"}: ${String(exc)}`); });
     await saveQueueRef.current;
   }
 
@@ -1497,8 +1716,8 @@ function ResultCardsPanel(props: {
     <div className="referenceHeader compact">
       <ClipboardCheck size={18} />
       <div>
-        <h3>Reviewable result cards</h3>
-        <p>AI candidate diagnosis, evidence, uncertainty, annotations, and human review status.</p>
+        <h3>{language === "en" ? "Reviewable result cards" : "Kartu hasil yang dapat ditinjau"}</h3>
+        <p>{language === "en" ? "AI candidate diagnosis, evidence, uncertainty, annotations, and human review status." : "Kandidat diagnosis AI, bukti, ketidakpastian, anotasi, dan status tinjauan manusia."}</p>
       </div>
     </div>
     {saveError && <div className="warn">{saveError}</div>}
@@ -1510,37 +1729,33 @@ function ResultCardsPanel(props: {
         </button>
         <p>{friendlyTechnicalText(card.candidate_diagnosis, language)}</p>
         <small>{language === "en" ? "Source" : "Sumber"}: {friendlyTechnicalText(card.source, language)}</small>
-        <small>Image: {textList(card.source_image_ids).join(", ") || activeCase?.active_image_id || "legacy primary"}{textList(card.source_views).length ? ` / ${textList(card.source_views).join(", ")}` : ""}</small>
+        <small>{language === "en" ? "Image" : "Gambar"}: {textList(card.source_image_ids).join(", ") || activeCase?.active_image_id || (language === "en" ? "legacy primary" : "gambar utama lama")}{textList(card.source_views).length ? ` / ${textList(card.source_views).join(", ")}` : ""}</small>
         <div className="resultCardEvidence">
           {asList<ResultEvidence>(card.evidence).slice(0, 4).map((item, index) => <span key={`${card.id}-${index}`}>{friendlyTechnicalText(item.kind, language)}: {friendlyTechnicalText(item.text, language)}</span>)}
         </div>
         <div className="resultCardLinks">
-          <span>Annotations</span>
-          <div className="groundedLinkRow">{textList(card.annotation_refs).length ? textList(card.annotation_refs).map(ref => <button key={ref} onClick={() => onFocusAnnotation(ref)}>{ref.slice(0, 8)}</button>) : <small>none</small>}</div>
-          <button className="reportJump" onClick={() => onFocusReport("report:findings")}><FileText size={14} />View report findings</button>
-          <span>Trace: {textList(card.model_trace_refs).length ? textList(card.model_trace_refs).join(", ") : "not linked"}</span>
+          <span>{language === "en" ? "Annotations" : "Anotasi"}</span>
+          <div className="groundedLinkRow">{textList(card.annotation_refs).length ? textList(card.annotation_refs).map(ref => <button key={ref} onClick={() => onFocusAnnotation(ref)}>{ref.slice(0, 8)}</button>) : <small>{language === "en" ? "none" : "tidak ada"}</small>}</div>
+          <button className="reportJump" onClick={() => onFocusReport("report:findings")}><FileText size={14} />{language === "en" ? "View report findings" : "Lihat temuan laporan"}</button>
+          <span>{language === "en" ? "Trace" : "Jejak"}: {textList(card.model_trace_refs).length ? textList(card.model_trace_refs).join(", ") : (language === "en" ? "not linked" : "belum ditautkan")}</span>
         </div>
         <div className="uncertainty">{friendlyTechnicalText(card.uncertainty_reason, language)}</div>
         <div className="nextAction">{friendlyTechnicalText(card.next_safe_action, language)}</div>
-        <label>Human review
+        <label>{language === "en" ? "Human review" : "Tinjauan manusia"}
           <select value={card.review_status} onChange={e => updateCard(card.id, { review_status: e.target.value as ResultCard["review_status"] })}>
-            <option value="unreviewed">unreviewed</option>
-            <option value="accepted">accepted</option>
-            <option value="rejected">rejected</option>
-            <option value="uncertain">uncertain</option>
-            <option value="needs_follow_up">needs follow-up</option>
+            {(["unreviewed", "accepted", "rejected", "uncertain", "needs_follow_up"] as const).map(status => <option value={status} key={status}>{reviewStatusText(status, language)}</option>)}
           </select>
         </label>
-        <label>Reviewer note
-          <textarea defaultValue={card.reviewer_note} onBlur={e => updateCard(card.id, { reviewer_note: e.currentTarget.value })} placeholder="Optional local reviewer note..." />
+        <label>{language === "en" ? "Reviewer note" : "Catatan reviewer"}
+          <textarea defaultValue={card.reviewer_note} onBlur={e => updateCard(card.id, { reviewer_note: e.currentTarget.value })} placeholder={language === "en" ? "Optional local reviewer note..." : "Catatan reviewer lokal (opsional)..."} />
         </label>
       </div>)}
-    </div> : <p>No result cards yet. Run the AI workflow to compose reviewable candidate outputs.</p>}
+    </div> : <p>{language === "en" ? "No result cards yet. Run the AI workflow to compose reviewable candidate outputs." : "Belum ada kartu hasil. Jalankan alur AI untuk menyusun kandidat output yang dapat ditinjau."}</p>}
     <div className="referenceHeader compact differentialHeader">
       <Stethoscope size={18} />
       <div>
-        <h3>Tentative differential assistance</h3>
-        <p>Organized from structured research signals; never a confirmed diagnosis or triage decision.</p>
+        <h3>{language === "en" ? "Tentative differential assistance" : "Bantuan diagnosis banding sementara"}</h3>
+        <p>{language === "en" ? "Organized from structured research signals; never a confirmed diagnosis or triage decision." : "Disusun dari sinyal riset terstruktur; bukan diagnosis atau keputusan triase yang terkonfirmasi."}</p>
       </div>
     </div>
     {differential.length ? <div className="resultCardList differentialList">
@@ -1548,21 +1763,22 @@ function ResultCardsPanel(props: {
         <b>{item.label}</b>
         <small>{item.review_status} / tentative / source {textList(item.source_image_ids).join(", ") || "current image"}</small>
         <div className="differentialEvidence">
-          <div><strong>Evidence for</strong>{textList(item.evidence_for).map((text, index) => <span key={`for-${index}`}>{text}</span>)}</div>
-          <div><strong>Evidence against / limitations</strong>{textList(item.evidence_against).map((text, index) => <span key={`against-${index}`}>{text}</span>)}</div>
-          <div><strong>Missing information</strong>{textList(item.missing_information).map((text, index) => <span key={`missing-${index}`}>{text}</span>)}</div>
+          <div><strong>{language === "en" ? "Evidence for" : "Bukti mendukung"}</strong>{textList(item.evidence_for).map((text, index) => <span key={`for-${index}`}>{friendlyTechnicalText(text, language)}</span>)}</div>
+          <div><strong>{language === "en" ? "Evidence against / limitations" : "Bukti tidak mendukung / keterbatasan"}</strong>{textList(item.evidence_against).map((text, index) => <span key={`against-${index}`}>{friendlyTechnicalText(text, language)}</span>)}</div>
+          <div><strong>{language === "en" ? "Missing information" : "Informasi yang belum ada"}</strong>{textList(item.missing_information).map((text, index) => <span key={`missing-${index}`}>{friendlyTechnicalText(text, language)}</span>)}</div>
         </div>
         <div className="uncertainty">{item.uncertainty}</div>
         <div className="nextAction">{item.next_safe_action}</div>
         <small className="caution">{item.safety_note}</small>
       </div>)}
-    </div> : <p>No structured differential candidate is available. This is preferable to inventing unsupported diagnoses.</p>}
+    </div> : <p>{language === "en" ? "No structured differential candidate is available. This is preferable to inventing unsupported diagnoses." : "Belum ada kandidat diagnosis banding terstruktur. Ini lebih aman daripada mengarang diagnosis tanpa bukti."}</p>}
   </section>;
 }
 
 function AnnotationPanel(props: {
   activeCase: CaseRecord | null;
   annotations: Annotation[];
+  pixelSpacing?: { row_mm: number; column_mm: number } | null;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onUpdate: (id: string, patch: Partial<Annotation>, action?: string, note?: string) => void;
@@ -1571,10 +1787,17 @@ function AnnotationPanel(props: {
   onLink: (annotationId: string, resultCardId: string, reportStatementId: string) => void;
   onFocusResultCard: (id: string) => void;
   onFocusReport: (id: string) => void;
+  onRerunAI: () => Promise<void>;
+  rerunBusy: boolean;
+  filter: AnnotationWorkspaceFilter;
+  onFilterChange: (filter: AnnotationWorkspaceFilter) => void;
+  onBatchReview: (ids: string[], status: AnnotationReviewStatus) => void;
 }) {
   const { language } = useUiLanguage();
-  const { activeCase, annotations, selectedId, onSelect, onUpdate, onDelete, resultCards, onLink, onFocusResultCard, onFocusReport } = props;
+  const { activeCase, annotations, pixelSpacing, selectedId, onSelect, onUpdate, onDelete, resultCards, onLink, onFocusResultCard, onFocusReport, onRerunAI, rerunBusy, filter, onFilterChange, onBatchReview } = props;
   const annotationList = asList<Annotation>(annotations);
+  const visibleAnnotationList = filterWorkspaceAnnotations(annotationList, filter);
+  const visibleUnreviewedAiIds = visibleAnnotationList.filter(annotation => annotationOrigin(annotation) === "ai" && (annotation.review_status || "unreviewed") === "unreviewed").map(annotation => annotation.id);
   const cardList = asList<ResultCard>(resultCards);
   const [reviewExport, setReviewExport] = useState<AnnotationReviewExport | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
@@ -1596,108 +1819,122 @@ function AnnotationPanel(props: {
     <div className="referenceHeader compact">
       <Layers size={18} />
       <div>
-        <h3>Interactive annotations</h3>
-        <p>Pilih overlay pada gambar atau daftar ini untuk review, koreksi, dan pelacakan provenance.</p>
+        <h3>{language === "en" ? "Interactive annotations" : "Anotasi interaktif"}</h3>
+        <p>{language === "en" ? "AI creates candidate annotations. You review, edit, accept, or reject them; every change remains traceable." : "AI membuat kandidat anotasi. Anda dapat meninjau, mengedit, menerima, atau menolaknya; setiap perubahan tetap terlacak."}</p>
       </div>
+    </div>
+    <div className="annotationValidationLoop">
+      <div><b>{language === "en" ? "Human-in-the-loop validation" : "Validasi human-in-the-loop"}</b><span>{language === "en" ? "After correcting annotations, ask AI to inspect the source image again using your decisions as feedback. New output is still unreviewed." : "Setelah mengoreksi anotasi, minta AI meninjau gambar sumber lagi dengan keputusan Anda sebagai umpan balik. Output baru tetap harus ditinjau."}</span></div>
+      <button className="primaryAction" onClick={() => void onRerunAI()} disabled={!activeCase || rerunBusy}><Bot size={16} />{rerunBusy ? (language === "en" ? "Re-reviewing…" : "Meninjau ulang…") : (language === "en" ? "Ask AI to re-review" : "Minta AI tinjau ulang")}</button>
     </div>
     <div className="annotationSummary">
       <div><span>Total</span><b>{annotationList.length}</b></div>
-      <div><span>Model coords</span><b>{annotationList.filter(a => String(a.source || "").includes("model")).length}</b></div>
-      <div><span>Segmentation</span><b>{annotationList.filter(a => String(a.source || "").includes("segmentation")).length}</b></div>
+      <div><span>{language === "en" ? "AI-generated" : "Dibuat AI"}</span><b>{annotationList.filter(a => annotationOrigin(a) === "ai").length}</b></div>
+      <div><span>{language === "en" ? "Segmentation" : "Segmentasi"}</span><b>{annotationList.filter(a => String(a.source || "").includes("segmentation")).length}</b></div>
       <div><span>{language === "en" ? "General guide" : "Panduan umum"}</span><b>{annotationList.filter(a => String(a.source || "").includes("fallback")).length}</b></div>
     </div>
+    <div className="annotationQueueControls">
+      <label>{language === "en" ? "Origin" : "Asal"}<select value={filter.origin} onChange={event => onFilterChange({ ...filter, origin: event.target.value as AnnotationWorkspaceFilter["origin"] })}><option value="all">{language === "en" ? "All origins" : "Semua asal"}</option><option value="ai">AI</option><option value="reviewer">{language === "en" ? "Reviewer" : "Reviewer"}</option><option value="guidance">{language === "en" ? "Guide" : "Panduan"}</option></select></label>
+      <label>{language === "en" ? "Review state" : "Status review"}<select value={filter.reviewStatus} onChange={event => onFilterChange({ ...filter, reviewStatus: event.target.value as AnnotationWorkspaceFilter["reviewStatus"] })}><option value="all">{language === "en" ? "All states" : "Semua status"}</option>{(["unreviewed", "accepted", "rejected", "uncertain", "needs_follow_up"] as const).map(status => <option value={status} key={status}>{reviewStatusText(status, language)}</option>)}</select></label>
+      <label className="confidenceFilter"><span>{language === "en" ? "Minimum AI confidence" : "Confidence AI minimum"}<b>{filter.minimumAiConfidence}%</b></span><input type="range" min="0" max="100" step="5" value={filter.minimumAiConfidence} onChange={event => onFilterChange({ ...filter, minimumAiConfidence: Number(event.target.value) })} /></label>
+      <span className="annotationQueueCount">{visibleAnnotationList.length} / {annotationList.length} {language === "en" ? "shown" : "ditampilkan"}</span>
+    </div>
+    <div className="annotationBatchActions">
+      <span>{language === "en" ? "Visible unreviewed AI candidates" : "Kandidat AI belum ditinjau yang terlihat"}: <b>{visibleUnreviewedAiIds.length}</b></span>
+      <button disabled={!visibleUnreviewedAiIds.length} onClick={() => onBatchReview(visibleUnreviewedAiIds, "accepted")}><CheckCircle2 size={15} />{language === "en" ? "Accept visible" : "Terima yang terlihat"}</button>
+      <button disabled={!visibleUnreviewedAiIds.length} onClick={() => onBatchReview(visibleUnreviewedAiIds, "rejected")}><XCircle size={15} />{language === "en" ? "Reject visible" : "Tolak yang terlihat"}</button>
+    </div>
     <div className="annotationExportActions">
-      <button onClick={exportPng} disabled={!activeCase || !annotationList.length}><Download size={16} />Reviewed PNG</button>
-      <button onClick={exportReviewPackage} disabled={!activeCase || !annotationList.length || exportBusy}><Archive size={16} />{exportBusy ? "Exporting..." : "AI vs reviewed package"}</button>
+      <button onClick={exportPng} disabled={!activeCase || !annotationList.length}><Download size={16} />{language === "en" ? "Reviewed PNG" : "PNG hasil tinjauan"}</button>
+      <button onClick={exportReviewPackage} disabled={!activeCase || !annotationList.length || exportBusy}><Archive size={16} />{exportBusy ? (language === "en" ? "Exporting..." : "Mengekspor...") : (language === "en" ? "AI vs reviewed package" : "Paket AI vs hasil tinjauan")}</button>
     </div>
     {reviewExport && <div className="reviewExportSummary">
-      <b>Review package ready</b>
+      <b>{language === "en" ? "Review package ready" : "Paket tinjauan siap"}</b>
       <span>{reviewExport.bundle.review_summary.ai_original_count} AI-original / {reviewExport.bundle.review_summary.reviewed_count} reviewed / {reviewExport.bundle.review_summary.changed_count} changed</span>
       <code>{reviewExport.ai_original_png}</code>
       <code>{reviewExport.reviewed_png}</code>
       <code>{reviewExport.comparison_json}</code>
     </div>}
-    {annotationList.length ? <div className="annotationList">
-      {annotationList.map(annotation => {
+    {visibleAnnotationList.length ? <div className="annotationList">
+      {visibleAnnotationList.map(annotation => {
         const selected = annotation.id === selectedId;
         const linkedResultIds = textList(annotation.linked_result_card_ids);
+        const origin = annotationOrigin(annotation);
+        const originText = origin === "ai" ? (language === "en" ? "AI-generated" : "Dibuat AI") : origin === "reviewer" ? (language === "en" ? "Reviewer-created" : "Dibuat reviewer") : (language === "en" ? "Guidance region" : "Area panduan");
         return <div className={`annotationCard ${selected ? "selected" : ""}`} key={annotation.id}>
           <button className="annotationSelect" onClick={() => onSelect(selected ? null : annotation.id)}>
             <span className="annotationSwatch" style={{ background: annotationColor(annotation) }} />
             <span className="annotationIdentity">
               <b>{friendlyTechnicalText(annotation.label, language)}</b>
-              <small>{friendlyTechnicalText(annotation.source, language)}</small>
+              <small>{originText}{origin === "ai" ? ` · ${language === "en" ? "AI confidence" : "Keyakinan AI"} ${annotationConfidencePercent(annotation.confidence)}%` : origin === "reviewer" ? ` · ${language === "en" ? "manual geometry" : "geometri manual"}` : ` · ${language === "en" ? "not a pathology confidence" : "bukan confidence patologi"}`}</small>
             </span>
-            <span className="annotationState">{annotation.visible ? <Eye size={15} /> : <EyeOff size={15} />}{annotation.review_status || "unreviewed"}</span>
+            <span className="annotationState"><strong className={`annotationConfidence ${origin}`}>{origin === "ai" ? `${annotationConfidencePercent(annotation.confidence)}%` : origin === "reviewer" ? (language === "en" ? "manual" : "manual") : (language === "en" ? "guide" : "panduan")}</strong>{annotation.visible ? <Eye size={15} /> : <EyeOff size={15} />}{reviewStatusText(annotation.review_status, language)}</span>
           </button>
           <code>{annotationCoordinateText(annotation)}</code>
+          {measureAnnotation(annotation, pixelSpacing) && <strong className="annotationMeasurement">{measureAnnotation(annotation, pixelSpacing)!.value} {measureAnnotation(annotation, pixelSpacing)!.unit}{!pixelSpacing ? ` (${language === "en" ? "uncalibrated pixels" : "piksel tanpa kalibrasi"})` : ""}</strong>}
           {selected && <div className="annotationEditor">
             <form className="annotationLabelForm" onSubmit={event => {
               event.preventDefault();
               const label = String(new FormData(event.currentTarget).get("annotation_label") || "").trim();
               if (label && label !== annotation.label) onUpdate(annotation.id, { label }, "edited", "Reviewer changed annotation label.");
             }}>
-              <label>Label<input name="annotation_label" defaultValue={annotation.label} /></label>
+              <label>{language === "en" ? "Label" : "Label"}<input name="annotation_label" defaultValue={annotation.label} /></label>
               <button type="submit" title="Save annotation label"><Save size={16} /></button>
             </form>
-            <label>Review
+            <label>{language === "en" ? "Review" : "Tinjauan"}
               <select value={annotation.review_status || "unreviewed"} onChange={event => onUpdate(
                 annotation.id,
                 { review_status: event.target.value as AnnotationReviewStatus },
                 "reviewed",
                 `Reviewer marked annotation ${event.target.value}.`
               )}>
-                <option value="unreviewed">unreviewed</option>
-                <option value="accepted">accepted</option>
-                <option value="rejected">rejected</option>
-                <option value="uncertain">uncertain</option>
-                <option value="needs_follow_up">needs follow-up</option>
+                {(["unreviewed", "accepted", "rejected", "uncertain", "needs_follow_up"] as const).map(status => <option value={status} key={status}>{reviewStatusText(status, language)}</option>)}
               </select>
             </label>
             <div className="groundedLinkEditor">
-              <b>Grounded links</b>
-              <label>Result card
+              <b>{language === "en" ? "Grounded links" : "Tautan berbasis bukti"}</b>
+              <label>{language === "en" ? "Result card" : "Kartu hasil"}
                 <select data-testid={`annotation-result-link-${annotation.id}`} value={linkedResultIds[0] || ""} onChange={event => onLink(annotation.id, event.target.value, annotation.linked_report_statement_id || "")}>
-                  <option value="">Not linked</option>
+                  <option value="">{language === "en" ? "Not linked" : "Belum ditautkan"}</option>
                   {cardList.map(card => <option key={card.id} value={card.id}>{friendlyTechnicalText(findingText(card), language)}</option>)}
                 </select>
               </label>
-              <label>Report section
+              <label>{language === "en" ? "Report section" : "Bagian laporan"}
                 <select data-testid={`annotation-report-link-${annotation.id}`} value={annotation.linked_report_statement_id || ""} onChange={event => onLink(annotation.id, linkedResultIds[0] || "", event.target.value)}>
-                  <option value="">Not linked</option>
-                  <option value="report:findings">Findings / Temuan</option>
-                  <option value="report:impression">Impression / Kesan</option>
+                  <option value="">{language === "en" ? "Not linked" : "Belum ditautkan"}</option>
+                  <option value="report:findings">{language === "en" ? "Findings" : "Temuan"}</option>
+                  <option value="report:impression">{language === "en" ? "Impression" : "Kesan"}</option>
                 </select>
               </label>
               <div className="groundedLinkRow">
-                {linkedResultIds[0] && <button onClick={() => onFocusResultCard(linkedResultIds[0])}><ClipboardCheck size={14} />Open result</button>}
-                {annotation.linked_report_statement_id && <button onClick={() => onFocusReport(annotation.linked_report_statement_id!)}><FileText size={14} />Open report</button>}
+                {linkedResultIds[0] && <button onClick={() => onFocusResultCard(linkedResultIds[0])}><ClipboardCheck size={14} />{language === "en" ? "Open result" : "Buka hasil"}</button>}
+                {annotation.linked_report_statement_id && <button onClick={() => onFocusReport(annotation.linked_report_statement_id!)}><FileText size={14} />{language === "en" ? "Open report" : "Buka laporan"}</button>}
               </div>
             </div>
             <div className="annotationSourceIdentity">
-              <b>Source image</b>
+              <b>{language === "en" ? "Source image" : "Gambar sumber"}</b>
               <span>{annotation.source_image_id || activeCase?.title || "primary"}</span>
-              <small>Image #{annotation.source_image_index || 0}{annotation.source_view ? ` / ${annotation.source_view}` : ""}{annotation.source_series_id ? ` / series ${annotation.source_series_id}` : ""}</small>
+              <small>Image #{(annotation.source_image_index ?? 0) + 1}{annotation.source_view ? ` / ${annotation.source_view}` : ""}{annotation.source_series_id ? ` / series ${annotation.source_series_id}` : ""}</small>
               {annotation.source_model && <small>Model: {annotation.source_model}{annotation.source_model_version ? ` / ${annotation.source_model_version}` : ""}</small>}
             </div>
-            <label>Reviewer note
+            <label>{language === "en" ? "Reviewer note" : "Catatan reviewer"}
               <textarea defaultValue={annotation.reviewer_note || ""} onBlur={event => {
                 if (event.currentTarget.value !== (annotation.reviewer_note || "")) onUpdate(annotation.id, { reviewer_note: event.currentTarget.value }, "edited", "Reviewer note updated.");
-              }} placeholder="Catatan koreksi atau alasan keputusan..." />
+              }} placeholder={language === "en" ? "Correction note or decision rationale..." : "Catatan koreksi atau alasan keputusan..."} />
             </label>
             <div className="annotationActions">
-              <button title={annotation.visible ? "Hide annotation" : "Show annotation"} onClick={() => onUpdate(annotation.id, { visible: !annotation.visible }, "visibility", annotation.visible ? "Annotation hidden by reviewer." : "Annotation shown by reviewer.")}>{annotation.visible ? <EyeOff size={16} /> : <Eye size={16} />}{annotation.visible ? "Hide" : "Show"}</button>
-              <button title={annotation.locked ? "Unlock geometry" : "Lock geometry"} onClick={() => onUpdate(annotation.id, { locked: !annotation.locked }, "locked", annotation.locked ? "Annotation unlocked." : "Annotation locked.")}>{annotation.locked ? <Unlock size={16} /> : <Lock size={16} />}{annotation.locked ? "Unlock" : "Lock"}</button>
-              {annotation.original_coordinate && <button title="Restore original AI geometry" onClick={() => onUpdate(annotation.id, { coordinate: { ...annotation.original_coordinate! } }, "resized", "Original annotation geometry restored.")}><RotateCcw size={16} />Restore</button>}
-              {String(annotation.source || "").includes("manual") && <button className="dangerAction" title="Delete manual annotation" onClick={() => onDelete(annotation.id)}><Trash2 size={16} />Delete</button>}
+              <button title={annotation.visible ? (language === "en" ? "Hide annotation" : "Sembunyikan anotasi") : (language === "en" ? "Show annotation" : "Tampilkan anotasi")} onClick={() => onUpdate(annotation.id, { visible: !annotation.visible }, "visibility", annotation.visible ? "Annotation hidden by reviewer." : "Annotation shown by reviewer.")}>{annotation.visible ? <EyeOff size={16} /> : <Eye size={16} />}{annotation.visible ? (language === "en" ? "Hide" : "Sembunyikan") : (language === "en" ? "Show" : "Tampilkan")}</button>
+              <button title={annotation.locked ? (language === "en" ? "Unlock geometry" : "Buka kunci geometri") : (language === "en" ? "Lock geometry" : "Kunci geometri")} onClick={() => onUpdate(annotation.id, { locked: !annotation.locked }, "locked", annotation.locked ? "Annotation unlocked." : "Annotation locked.")}>{annotation.locked ? <Unlock size={16} /> : <Lock size={16} />}{annotation.locked ? (language === "en" ? "Unlock" : "Buka kunci") : (language === "en" ? "Lock" : "Kunci")}</button>
+              {annotation.original_coordinate && <button title={language === "en" ? "Restore original AI geometry" : "Pulihkan geometri AI asli"} onClick={() => onUpdate(annotation.id, { coordinate: { ...annotation.original_coordinate! } }, "resized", "Original annotation geometry restored.")}><RotateCcw size={16} />{language === "en" ? "Restore" : "Pulihkan"}</button>}
+              {String(annotation.source || "").includes("manual") && <button className="dangerAction" title={language === "en" ? "Delete manual annotation" : "Hapus anotasi manual"} onClick={() => onDelete(annotation.id)}><Trash2 size={16} />{language === "en" ? "Delete" : "Hapus"}</button>}
             </div>
             <small>{friendlyTechnicalText(annotation.explanation, language)}</small>
-            <small>{annotation.revision_history?.length || 0} recorded revision(s)</small>
+            <small>{annotation.revision_history?.length || 0} {language === "en" ? "recorded revision(s)" : "revisi tercatat"}</small>
           </div>}
           {String(annotation.source || "").includes("fallback") && <small className="caution">{language === "en" ? "This is a general review area, not the location of an abnormality." : "Area ini hanya panduan pemeriksaan umum, bukan lokasi kelainan."}</small>}
         </div>;
       })}
-    </div> : <p>{language === "en" ? "No annotations yet. Run analysis or create one manually." : "Belum ada anotasi. Jalankan analisis atau buat anotasi manual."}</p>}
+    </div> : <p>{annotationList.length ? (language === "en" ? "No annotations match these filters." : "Tidak ada anotasi yang cocok dengan filter ini.") : (language === "en" ? "No annotations yet. Run analysis or create one manually." : "Belum ada anotasi. Jalankan analisis atau buat anotasi manual.")}</p>}
   </section>;
 }
 
@@ -1719,13 +1956,13 @@ function TrustPanel({ activeCase, analysis }: { activeCase: CaseRecord | null; a
     <div className="referenceHeader compact">
       <ShieldCheck size={18} />
       <div>
-        <h3>Why this output exists</h3>
-        <p>Identitas input, konfigurasi AI, dan riwayat proses disimpan untuk audit lokal.</p>
+        <h3>{language === "en" ? "Why this output exists" : "Mengapa output ini ada"}</h3>
+        <p>{language === "en" ? "Input identity, AI configuration, and processing history are retained for local audit." : "Identitas input, konfigurasi AI, dan riwayat proses disimpan untuk audit lokal."}</p>
       </div>
     </div>
     <div className="trustGrid">
-      <div><b>Input hash</b><span>{hashes?.input?.digest ? `${hashes.input.digest.slice(0, 16)}...` : "not captured yet"}</span></div>
-      <div><b>Preview hash</b><span>{hashes?.preview?.digest ? `${hashes.preview.digest.slice(0, 16)}...` : "not captured yet"}</span></div>
+      <div><b>Input hash</b><span>{hashes?.input?.digest ? `${hashes.input.digest.slice(0, 16)}...` : (language === "en" ? "not captured yet" : "belum direkam")}</span></div>
+      <div><b>Preview hash</b><span>{hashes?.preview?.digest ? `${hashes.preview.digest.slice(0, 16)}...` : (language === "en" ? "not captured yet" : "belum direkam")}</span></div>
       <div><b>{language === "en" ? "Analysis mode" : "Mode analisis"}</b><span>{friendlyAnalysisMode(runtime.primary_backend || "not analyzed", language)}</span></div>
       <div><b>Trace</b><span>{trace.length} stage(s)</span></div>
     </div>
@@ -1737,6 +1974,7 @@ function TrustPanel({ activeCase, analysis }: { activeCase: CaseRecord | null; a
 }
 
 function DicomSafetyPanel({ activeCase, image }: { activeCase: CaseRecord | null; image: StudyImage | null }) {
+  const { language } = useUiLanguage();
   const [report, setReport] = useState<DicomSafetyReport | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1767,7 +2005,7 @@ function DicomSafetyPanel({ activeCase, image }: { activeCase: CaseRecord | null
       const result = await api.exportDicomMetadata(activeCase.case_id, image.image_id);
       setExports(current => [...current, result.path]);
       const verification = result.payload.verification as Record<string, unknown> | undefined;
-      setExportChecks(current => [...current, `Metadata verification: ${verification?.passed === true ? "passed" : "review required"}`]);
+      setExportChecks(current => [...current, language === "en" ? `Metadata verification: ${verification?.passed === true ? "passed" : "review required"}` : `Verifikasi metadata: ${verification?.passed === true ? "lulus" : "perlu ditinjau"}`]);
     } catch (exc) {
       setError(String(exc));
     } finally {
@@ -1783,7 +2021,7 @@ function DicomSafetyPanel({ activeCase, image }: { activeCase: CaseRecord | null
       const result = await api.exportDeidentifiedDicom(activeCase.case_id, image.image_id, acknowledged);
       setExports(current => [...current, String(result.path || "")].filter(Boolean));
       const verification = result.verification as Record<string, unknown> | undefined;
-      setExportChecks(current => [...current, `DICOM readback verification: ${verification?.passed === true ? "passed" : "review required"}`]);
+      setExportChecks(current => [...current, language === "en" ? `DICOM readback verification: ${verification?.passed === true ? "passed" : "review required"}` : `Verifikasi baca ulang DICOM: ${verification?.passed === true ? "lulus" : "perlu ditinjau"}`]);
     } catch (exc) {
       setError(String(exc));
     } finally {
@@ -1791,51 +2029,51 @@ function DicomSafetyPanel({ activeCase, image }: { activeCase: CaseRecord | null
     }
   }
 
-  if (!activeCase || !image) return <section className="dicomSafety"><h3>DICOM Safety</h3><p>Load a study image first.</p></section>;
-  if (!isDicom) return <section className="dicomSafety"><h3>DICOM Safety</h3><p>The active image is not DICOM. DICOMweb remains disabled.</p></section>;
+  if (!activeCase || !image) return <section className="dicomSafety"><h3>{language === "en" ? "DICOM Safety" : "Keamanan DICOM"}</h3><p>{language === "en" ? "Load a study image first." : "Muat gambar studi terlebih dahulu."}</p></section>;
+  if (!isDicom) return <section className="dicomSafety"><h3>{language === "en" ? "DICOM Safety" : "Keamanan DICOM"}</h3><p>{language === "en" ? "The active image is not DICOM. DICOMweb remains disabled." : "Gambar aktif bukan DICOM. DICOMweb tetap dinonaktifkan."}</p></section>;
   const risk = report?.burned_in_annotation_risk;
   const requiresAcknowledgement = risk?.level === "high" || risk?.level === "unknown";
   const groups = ["patient", "study", "series", "acquisition", "private", "other"];
   return <section className="dicomSafety">
-    <div className="referenceHeader compact"><ShieldCheck size={18} /><div><h3>DICOM Safety</h3><p>Local tag review and prototype de-identification. Verify every export before sharing.</p></div></div>
-    {busy && <div className="warn">Reading local DICOM safety data...</div>}
+    <div className="referenceHeader compact"><ShieldCheck size={18} /><div><h3>{language === "en" ? "DICOM Safety" : "Keamanan DICOM"}</h3><p>{language === "en" ? "Local tag review and prototype de-identification. Verify every export before sharing." : "Tinjauan tag lokal dan de-identifikasi prototipe. Verifikasi setiap ekspor sebelum dibagikan."}</p></div></div>
+    {busy && <div className="warn">{language === "en" ? "Reading local DICOM safety data..." : "Membaca data keamanan DICOM lokal..."}</div>}
     {error && <div className="warn">{error}</div>}
     {report && <>
       <div className={`dicomRisk ${risk?.level || "unknown"}`}>
-        <b>Burned-in annotation risk: {risk?.level || "unknown"}</b>
+        <b>{language === "en" ? "Burned-in annotation risk" : "Risiko anotasi tertanam"}: {risk?.level || (language === "en" ? "unknown" : "tidak diketahui")}</b>
         <span>{risk?.reason}</span>
-        <small>Pixel data is retained unchanged during export.</small>
+        <small>{language === "en" ? "Pixel data is retained unchanged during export." : "Data piksel dipertahankan tanpa perubahan saat ekspor."}</small>
       </div>
       <div className="dicomFacts">
-        <div><span>Private tags</span><b>{report.private_tag_count}</b></div>
+        <div><span>{language === "en" ? "Private tags" : "Tag privat"}</span><b>{report.private_tag_count}</b></div>
         <div><span>DICOMweb</span><b>{report.dicomweb_status}</b></div>
-        <div><span>Source hash</span><b>{report.source_sha256.slice(0, 16)}...</b></div>
-        <div><span>Frames</span><b>{report.pixel_data_summary?.number_of_frames ?? "unknown"}</b></div>
+        <div><span>{language === "en" ? "Source hash" : "Hash sumber"}</span><b>{report.source_sha256.slice(0, 16)}...</b></div>
+        <div><span>{language === "en" ? "Frames" : "Frame"}</span><b>{report.pixel_data_summary?.number_of_frames ?? (language === "en" ? "unknown" : "tidak diketahui")}</b></div>
         <div><span>Transfer syntax</span><b>{report.pixel_data_summary?.transfer_syntax_uid || "unknown"}</b></div>
         <div><span>Pixel export</span><b>{report.pixel_data_summary?.export_behavior || "review required"}</b></div>
       </div>
       {textList(report.warnings).map((warning, index) => <small className="caution" key={index}>{warning}</small>)}
       <div className="deidPreview">
-        <h4>De-identification preview</h4>
+        <h4>{language === "en" ? "De-identification preview" : "Pratinjau de-identifikasi"}</h4>
         {asList<DicomSafetyReport["deidentification_preview"][number]>(report.deidentification_preview).map((item, index) => <div key={`${item.keyword}-${index}`}><b>{item.keyword}</b><span>{item.action}</span><small>{item.replacement || "removed"}</small></div>)}
       </div>
       <div className="dicomTagViewer">
-        <h4>Local tag viewer</h4>
-        <div className="warn compactWarn">May contain sensitive patient data. Values stay in this local application.</div>
+        <h4>{language === "en" ? "Local tag viewer" : "Penampil tag lokal"}</h4>
+        <div className="warn compactWarn">{language === "en" ? "May contain sensitive patient data. Values stay in this local application." : "Mungkin mengandung data pasien sensitif. Nilai tetap berada di aplikasi lokal ini."}</div>
         {groups.map(group => {
           const tags = asList<DicomTag>(report.tag_groups?.[group]);
           return <details key={group} open={group === "patient" || group === "private"}>
             <summary>{group} ({tags.length})</summary>
             <div className="dicomTagList">{tags.length ? tags.map((tag, index) => <div key={`${tag.tag}-${index}`}>
               <code>{tag.tag}</code><b>{tag.keyword || tag.name}</b><span>{String(tag.value ?? "")}</span><small>{tag.action}</small>
-            </div>) : <p>No tags in this group.</p>}</div>
+            </div>) : <p>{language === "en" ? "No tags in this group." : "Tidak ada tag dalam grup ini."}</p>}</div>
           </details>;
         })}
       </div>
-      {requiresAcknowledgement && <label className="dicomAcknowledgement"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /> I manually reviewed the pixel image for burned-in identifiers and accept the residual risk for this local prototype export.</label>}
+      {requiresAcknowledgement && <label className="dicomAcknowledgement"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /> {language === "en" ? "I manually reviewed the pixel image for burned-in identifiers and accept the residual risk for this local prototype export." : "Saya telah meninjau gambar piksel untuk identitas yang tertanam dan menerima risiko tersisa pada ekspor prototipe lokal ini."}</label>}
       <div className="actions">
-        <button onClick={exportMetadata} disabled={busy}><Download size={16} />De-identified metadata JSON</button>
-        <button onClick={exportDicom} disabled={busy || (requiresAcknowledgement && !acknowledged)}><Download size={16} />De-identified DICOM copy</button>
+        <button onClick={exportMetadata} disabled={busy}><Download size={16} />{language === "en" ? "De-identified metadata JSON" : "JSON metadata terde-identifikasi"}</button>
+        <button onClick={exportDicom} disabled={busy || (requiresAcknowledgement && !acknowledged)}><Download size={16} />{language === "en" ? "De-identified DICOM copy" : "Salinan DICOM terde-identifikasi"}</button>
       </div>
       {exports.map((path, index) => <code className="savedPath" key={`${path}-${index}`}>{path}</code>)}
       {exportChecks.map((check, index) => <small key={`${check}-${index}`}>{check}</small>)}
@@ -1844,17 +2082,19 @@ function DicomSafetyPanel({ activeCase, image }: { activeCase: CaseRecord | null
 }
 
 function ChatPanel({ activeCase, setActiveCase }: { activeCase: CaseRecord | null; setActiveCase: (c: CaseRecord | null) => void }) {
-  const { copy } = useUiLanguage();
+  const { copy, language } = useUiLanguage();
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [runtimeState, setRuntimeState] = useState<{ backend: string; fallback: boolean } | null>(null);
   async function send() {
     if (!activeCase || !msg.trim()) return;
     setBusy(true);
     setError("");
     try {
-      const res = await api.chat(activeCase.case_id, msg);
+      const res = await api.chat(activeCase.case_id, msg, language);
       setActiveCase({ ...activeCase, chat_history: res.history });
+      setRuntimeState({ backend: res.backend, fallback: res.fallback });
       setMsg("");
     } catch (exc) {
       setError(String(exc));
@@ -1864,9 +2104,12 @@ function ChatPanel({ activeCase, setActiveCase }: { activeCase: CaseRecord | nul
   }
   return <section className="chat">
     <h2>{copy.chatTitle}</h2>
+    <p>{language === "en" ? "Ask about the active image, report, annotations, uncertainty, or provenance. The answer follows the interface language." : "Tanyakan gambar aktif, laporan, anotasi, ketidakpastian, atau asal bukti. Jawaban mengikuti bahasa antarmuka."}</p>
+    <div className="groundedLinkRow">{(language === "en" ? ["Summarize the main findings", "Explain the annotations", "What are the limitations?"] : ["Ringkas temuan utama", "Jelaskan anotasi", "Apa keterbatasannya?"]).map(prompt => <button key={prompt} disabled={!activeCase || busy} onClick={() => setMsg(prompt)}>{prompt}</button>)}</div>
+    {runtimeState && <small>{language === "en" ? "Response mode" : "Mode jawaban"}: {runtimeState.backend}{runtimeState.fallback ? (language === "en" ? " · safe fallback" : " · fallback aman") : ""}</small>}
     {error && <div className="warn">{error}</div>}
     <div className="messages">{activeCase ? asList<CaseRecord["chat_history"][number]>(activeCase.chat_history).map((m, i) => <div key={i} className={String(m.role || "assistant")}>{String(m.content || "")}</div>) : <p>{copy.chooseCase}</p>}</div>
-    <div className="composer"><input value={msg} onChange={e => setMsg(e.target.value)} placeholder={copy.chatPlaceholder} /><button onClick={send} disabled={busy || !activeCase}><MessageSquare size={17} />{copy.send}</button></div>
+    <form className="composer" onSubmit={event => { event.preventDefault(); void send(); }}><input value={msg} onChange={e => setMsg(e.target.value)} placeholder={copy.chatPlaceholder} /><button type="submit" disabled={busy || !activeCase || !msg.trim()}><MessageSquare size={17} />{copy.send}</button></form>
   </section>;
 }
 
@@ -1880,8 +2123,7 @@ function ReportPage(props: {
 }) {
   const { activeCase, analysis, annotations, selectedStatementId, onFocusAnnotation, onFocusResultCard } = props;
   const { language: uiLanguage, copy } = useUiLanguage();
-  const [language, setLanguage] = useState<UiLanguage>(uiLanguage);
-  useEffect(() => { setLanguage(uiLanguage); }, [uiLanguage]);
+  const language = uiLanguage;
   async function exportFmt(format: string) {
     if (!activeCase) return;
     const res = await api.exportReport(activeCase.case_id, format, language);
@@ -1906,7 +2148,8 @@ function ReportPage(props: {
   ] : [];
   const reportText = report ? `${language === "en" ? "Case identity" : "Identitas kasus"}: ${activeCase?.case_id}\n${sections.map(section => `${language === "en" ? section.enLabel : section.idLabel}: ${section.value}`).join("\n")}\n${language === "en" ? "Note" : "Catatan"}: ${report.watermark}` : "";
   return <section className="report">
-    <div className="row"><h2>{copy.reportTitle}</h2><label>{copy.language}<select value={language} onChange={e => setLanguage(e.target.value as UiLanguage)}><option value="id">{copy.indonesian}</option><option value="en">{copy.english}</option></select></label></div>
+    <div className="row"><h2>{copy.reportTitle}</h2><span>{copy.language}: {language === "en" ? copy.english : copy.indonesian}</span></div>
+    {report && report.language && report.language !== language && <div className="warn">{language === "en" ? "This saved report was generated in another language. Run the AI workflow again to regenerate every clinical section in English." : "Laporan tersimpan ini dibuat dalam bahasa lain. Jalankan ulang alur AI agar seluruh bagian klinis dibuat dalam bahasa Indonesia."}</div>}
     {resultCards.length > 0 && <div className="reportResultCards">
       {resultCards.map(card => <button key={card.id} onClick={() => onFocusResultCard(card.id)}><b>{friendlyTechnicalText(findingText(card), uiLanguage)}</b><span>{card.status} / {scoreText(card)} / {card.review_status}</span></button>)}
     </div>}
@@ -1935,26 +2178,6 @@ function ReportPage(props: {
     </div> : <p>{copy.reportEmpty}</p>}
     <div className="actions"><button onClick={() => navigator.clipboard.writeText(reportText)}>{copy.reportCopy}</button><button onClick={() => exportFmt("markdown")}><Download size={16} />Markdown</button><button onClick={() => exportFmt("pdf")}><Download size={16} />PDF</button><button onClick={() => exportFmt("json")}><Download size={16} />JSON</button><button onClick={exportPng}>Annotated PNG</button></div>
   </section>;
-}
-
-function RoadmapNext() {
-  const items = [
-    { version: "Done", title: "Grounded Review foundation", detail: "Annotation interaktif, grounded links, source image identity, serta ekspor AI-original versus reviewed sudah tersedia." },
-    { version: "Done", title: "Anatomy Routing foundation", detail: "Chest, MSK/trauma, abdomen, spine, skull/facial, dan general X-ray kini dirutekan sebelum inference dengan override dan support gate." },
-    { version: "Done", title: "Grounded Draft Reporting", detail: "Statement laporan kini dibangun dari result card dan anotasi yang sudah direview, lalu masuk ke export JSON/Markdown/PDF/audit." },
-    { version: "Now", title: "MSK localization validation", detail: "Adapter detector dan metrik IoU sudah siap; berikutnya pilih bobot lokal sempit yang direview dan validasi pada held-out MSK reference boxes." },
-    { version: "Research", title: "LocateAnything evaluation gate", detail: "Kandidat grounding generik ini hanya masuk jalur evaluasi R0-R1: review lisensi/kode/artifact dan parser bbox/point. Belum aktif untuk X-ray karena belum ada bukti radiograf, kebutuhan hardware lokal belum terukur, dan bobotnya non-komersial." },
-    { version: "Done", title: "Multi-image + reviewer shapes", detail: "Navigator multi-image serta authoring bbox, point, dan polygon manual sudah terhubung ke review, validation, report, dan audit." },
-    { version: "Done", title: "DICOM safety foundation", detail: "Tag viewer, de-identification preview, private/burned-in warning, safe copy export, dan DICOMweb-disabled state sudah tersedia untuk review lokal." },
-  ];
-  return <div className="roadmapNext">
-    <h3>Next roadmap</h3>
-    {items.map(item => <div key={item.version}>
-      <span>{item.version}</span>
-      <b>{item.title}</b>
-      <p>{item.detail}</p>
-    </div>)}
-  </div>;
 }
 
 function formatBytes(bytes?: number | null) {
@@ -2065,18 +2288,7 @@ function mergedCardDraft(model: LocalModelArtifact, draft: Record<string, string
   return { ...cardDraftFromModel(model), ...draft };
 }
 
-function ModelFinder() {
-  const [source, setSource] = useState("all");
-  const [q, setQ] = useState("chest xray cxr radiograph model");
-  const [limit] = useState(12);
-  const [page, setPage] = useState(1);
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
-  const [hardwarePlan, setHardwarePlan] = useState<HardwarePlan | null>(null);
-  const [hardwareBusy, setHardwareBusy] = useState(false);
-  const [selectedSlot, setSelectedSlot] = useState<keyof RuntimeConfig>("classification_model");
-  const [url, setUrl] = useState("");
-  const [filename, setFilename] = useState("");
-  const [downloads, setDownloads] = useState<DownloadJob[]>([]);
+function LocalModelManager({ selectedDetail }: { selectedDetail: Record<string, unknown> | null }) {
   const [localModels, setLocalModels] = useState<LocalModelArtifact[]>([]);
   const [cardDrafts, setCardDrafts] = useState<Record<string, Record<string, string | boolean>>>({});
   const [cardErrors, setCardErrors] = useState<Record<string, string[]>>({});
@@ -2084,98 +2296,10 @@ function ModelFinder() {
   const [cardBusy, setCardBusy] = useState("");
   const [importPath, setImportPath] = useState("");
   const [importResult, setImportResult] = useState<Record<string, unknown> | null>(null);
-  const [hfStatus, setHfStatus] = useState<HuggingFaceAuthStatus | null>(null);
-  const [hfToken, setHfToken] = useState("");
-  const [githubStatus, setGithubStatus] = useState<HuggingFaceAuthStatus | null>(null);
-  const [githubToken, setGithubToken] = useState("");
-  const [selectedModel, setSelectedModel] = useState<Record<string, unknown> | null>(null);
-  const [detailBusy, setDetailBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [backendStatus, setBackendStatus] = useState("Memeriksa aplikasi...");
-  useEffect(() => {
-    api.health().then(() => setBackendStatus("Aplikasi siap")).catch(() => setBackendStatus("Aplikasi belum terhubung"));
-    setResult({ source: "No search yet", results: [], fallback_used: false });
-    api.downloads().then(value => setDownloads(asList<DownloadJob>(value))).catch(() => setDownloads([]));
-    api.localModels().then(value => setLocalModels(asList<LocalModelArtifact>(value))).catch(() => setLocalModels([]));
-    api.huggingFaceStatus().then(setHfStatus).catch(() => setHfStatus(null));
-    api.githubStatus().then(setGithubStatus).catch(() => setGithubStatus(null));
-    api.hardwareRecommendations().then(setHardwarePlan).catch(() => undefined);
-  }, []);
-  useEffect(() => {
-    if (!downloads.some(isActiveDownload)) return;
-    const timer = window.setInterval(() => {
-      api.downloads().then(value => setDownloads(asList<DownloadJob>(value))).catch(() => undefined);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [downloads]);
-  async function search(nextSource = source, query = q, nextPage = page) {
-    setBusy(true);
-    setError("");
-    try {
-      const next = await api.modelSearch(nextSource, query, limit, nextPage);
-      setResult(next);
-    } catch (exc) {
-      setError(String(exc));
-      setResult({ source: "Search failed", results: [], fallback_used: true });
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function pickRuntimeSlot(slot: HardwarePlan["runtime_slots"][number]) {
-    setSelectedSlot(slot.slot);
-    const nextSource = "all";
-    setSource(nextSource);
-    setQ(slot.query);
-    setPage(1);
-    await search(nextSource, slot.query, 1);
-  }
-  async function checkHardware() {
-    setHardwareBusy(true);
-    setError("");
-    try {
-      setHardwarePlan(await api.hardwareRecommendations());
-    } catch (exc) {
-      setError(String(exc));
-    } finally {
-      setHardwareBusy(false);
-    }
-  }
-  function queueModelFile(model: Record<string, unknown>, file: string) {
-    const sourceName = String(model.source || "");
-    if (sourceName !== "Hugging Face") {
-      setError("Program download saat ini paling aman untuk file Hugging Face atau URL file langsung. Untuk GitHub/Ollama, pakai halaman sumber atau import folder lokal dulu.");
-      return;
-    }
-    const repo = String(model.name || model.id || "").replace(/^hf:/, "");
-    if (!repo || !file) return;
-    const downloadUrl = `https://huggingface.co/${repo}/resolve/main/${file.split("/").map(part => encodeURIComponent(part)).join("/")}`;
-    setUrl(downloadUrl);
-    setFilename(safeModelFilename(repo, file));
-    setError("");
-  }
-  async function dl() {
-    if (!url.trim()) return;
-    const confirmed = window.confirm("Model files can be large. Queue this download locally without enabling it for analysis?");
-    if (!confirmed) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api.downloadModel(url, filename.trim() || undefined);
-      setDownloads(asList<DownloadJob>(await api.downloads()));
-      setLocalModels(asList<LocalModelArtifact>(await api.localModels()));
-      setUrl("");
-      setFilename("");
-    } catch (exc) {
-      setError(String(exc));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function refreshDownloads() {
-    setDownloads(asList<DownloadJob>(await api.downloads()));
-    setLocalModels(asList<LocalModelArtifact>(await api.localModels()));
-  }
+  const selectedModel = selectedDetail;
+  useEffect(() => { void refreshLocalModels().catch(exc => setError(String(exc))); }, []);
   async function refreshLocalModels() {
     setLocalModels(asList<LocalModelArtifact>(await api.localModels()));
   }
@@ -2255,273 +2379,13 @@ function ModelFinder() {
       setBusy(false);
     }
   }
-  async function downloadAction(action: "pause" | "resume" | "cancel" | "retry" | "delete", id: string) {
-    setError("");
-    try {
-      if (action === "pause") await api.pauseDownload(id);
-      if (action === "resume") await api.resumeDownload(id);
-      if (action === "cancel") await api.cancelDownload(id);
-      if (action === "retry") await api.retryDownload(id);
-      if (action === "delete") await api.deleteDownload(id);
-      await refreshDownloads();
-    } catch (exc) {
-      setError(String(exc));
-    }
-  }
-  async function saveHfToken() {
-    if (!hfToken.trim()) return;
-    setError("");
-    try {
-      setHfStatus(await api.saveHuggingFaceToken(hfToken));
-      setHfToken("");
-    } catch (exc) {
-      setError(String(exc));
-    }
-  }
-  async function logoutHf() {
-    setHfStatus(await api.clearHuggingFaceToken());
-    setHfToken("");
-  }
-  async function saveGithubToken() {
-    if (!githubToken.trim()) return;
-    setError("");
-    try {
-      setGithubStatus(await api.saveGithubToken(githubToken));
-      setGithubToken("");
-    } catch (exc) {
-      setError(String(exc));
-    }
-  }
-  async function logoutGithub() {
-    setGithubStatus(await api.clearGithubToken());
-    setGithubToken("");
-  }
-  function changeSource(nextSource: string) {
-    setSource(nextSource);
-  }
-  async function reviewModel(model: Record<string, unknown>) {
-    setDetailBusy(true);
-    setError("");
-    try {
-      const id = String(model.id || model.name || "");
-      const sourceForDetail = id.startsWith("starter:") ? "starter" : String(model.source || source);
-      setSelectedModel(await api.modelDetail(sourceForDetail, id, String(model.url || "")));
-    } catch (exc) {
-      setError(String(exc));
-      setSelectedModel(model);
-    } finally {
-      setDetailBusy(false);
-    }
-  }
-  const resultItems = asList<Record<string, unknown>>(result?.results);
-  const modelItems = asList<Record<string, unknown>>(result?.models);
-  const externalResults = resultItems.length ? resultItems : modelItems;
-  const visibleResults = externalResults.filter(item => !String(item.id || "").startsWith("starter:"));
-  const hardwareSlots = asList<HardwarePlan["runtime_slots"][number]>(hardwarePlan?.runtime_slots);
-  const selectedPlan = hardwareSlots.find(item => item.slot === selectedSlot);
-  const searchErrors = textList(result?.errors);
-  const queriesUsed = textList(result?.queries_used);
-  const searchButtonLabel = source === "all" ? "Search all" : "Search source";
-  return <section className="panel finder">
-    <div className="setupHero">
-      <div>
-        <h2>Model AI tambahan <small>(opsional)</small></h2>
-        <p>Lewati halaman ini jika hanya ingin memakai alur dasar. Gunakan halaman ini untuk mencari dan memasang model AI tambahan.</p>
-      </div>
-      <div className="heroActions">
-        <button onClick={checkHardware} disabled={hardwareBusy}><Cpu size={16} />{hardwareBusy ? "Checking" : "Cek ulang hardware"}</button>
-      </div>
-    </div>
 
-    <div className="setupStatusGrid">
-      <div className={backendStatus.includes("siap") ? "setupStatus ok" : "setupStatus warnState"}><b>Aplikasi</b><span>{backendStatus}</span></div>
-      <div className={hfStatus?.configured ? "setupStatus ok" : "setupStatus"}><b>Hugging Face</b><span>{hfStatus?.configured ? "Login token aktif untuk gated/private/rate limit." : "Opsional. Public search tetap bisa tanpa login."}</span></div>
-      <div className={githubStatus?.configured ? "setupStatus ok" : "setupStatus"}><b>GitHub</b><span>{githubStatus?.configured ? "Token aktif untuk search metadata dan rate limit lebih longgar." : "Opsional. Tambahkan token kalau kena 403/rate limit."}</span></div>
-    </div>
-
-    {hardwarePlan && <HardwareAdvisor plan={hardwarePlan} />}
-
-    <section className="setupStep">
-      <div className="stepHeader"><span>1</span><div><h3>Pilih fungsi model</h3><p>Pilih apakah model digunakan untuk analisis gambar, penandaan lokasi, atau laporan.</p></div></div>
-      <div className="taskPicker">
-        {hardwareSlots.length ? hardwareSlots.map(slot => {
-          const includedTools = textList(slot.includes);
-          return <button key={slot.slot} className={selectedSlot === slot.slot ? "selected" : ""} onClick={() => pickRuntimeSlot(slot)}>
-          <b>{slot.label}</b>
-          {includedTools.length > 0 && <span>{includedTools.join(" + ")}</span>}
-          <small>{slot.recommended_model}</small>
-        </button>;
-        }) : <div className="emptyState">Hardware check belum tersedia. Klik Cek ulang hardware.</div>}
-      </div>
-    </section>
-
-    <section className="setupStep">
-      <div className="stepHeader"><span>2</span><div><h3>Cari kandidat model</h3><p>{selectedPlan ? selectedPlan.recommendation : "Pilih fungsi runtime dulu."}</p></div></div>
-      <div className="finderSearch simpleSearch">
-        <select value={source} onChange={e => changeSource(e.target.value)}><option value="all">All external sources</option><option value="hf">Hugging Face</option><option value="github">GitHub</option><option value="ollama">Ollama installed</option></select>
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="contoh: chest xray classifier, CXR report LLM, xray VLM" />
-        <button onClick={() => search()} disabled={busy}><Search size={16} />{busy ? "Searching" : searchButtonLabel}</button>
-      </div>
-    </section>
-
-    {error && <div className="warn">{error}</div>}
-    {searchErrors.length > 0 && <div className="pathNote">Sebagian source gagal, tapi hasil lain tetap ditampilkan: {searchErrors.slice(0, 2).join(" | ")}</div>}
-    {queriesUsed.length > 1 && <div className="pathNote">Search diperluas: {queriesUsed.slice(0, 4).join(" | ")}</div>}
-    {Boolean(result?.fallback_used) && !searchErrors.length && <div className="pathNote">Source eksternal kosong/offline.</div>}
-    <section className="setupStep">
-      <div className="stepHeader"><span>3</span><div><h3>Pilih hasil</h3><p>Review dulu. Download hanya menyimpan artifact, belum mengaktifkan runtime.</p></div></div>
-      <div className="results">{visibleResults.length ? visibleResults.map((m, i) => <div className="model simplifiedModel" key={String(m.id || i)}>
-      <div className="row"><b>{String(m.name || m.id)}</b><span>{String(m.source || result?.source)}</span></div>
-      <div className="scoreLine"><strong>{String(m.fit_percent ?? "?")}% cocok</strong><span>Hardware {String(m.hardware_fit_percent ?? "?")}%</span><span>{String(m.task_type || "unknown")} / VRAM {String(m.vram_estimate || "unknown")}</span></div>
-      <small>{String(m.fit_summary || m.reason || m.license || "Review source sebelum dipakai.")}</small>
-      <div className="modelActions">
-        <button onClick={() => reviewModel(m)} disabled={detailBusy}><FileText size={16} />Review / download files</button>
-        {safeExternalUrl(m.url) && <a href={safeExternalUrl(m.url)} target="_blank" rel="noreferrer">Open source page</a>}
-      </div>
-    </div>) : <div className="emptyState">Belum ada hasil dari source ini.</div>}</div>
-    </section>
-    {selectedModel && <ModelDetailPanel model={selectedModel} busy={detailBusy} onClose={() => setSelectedModel(null)} onQueueFile={queueModelFile} />}
-
-    <details className="setupStep finderDisclosure">
-      <summary className="stepHeader"><span>4</span><div><h3>Download / import (opsional)</h3><p>Buka untuk direct URL atau memantau antrean download.</p></div></summary>
-      <div className="downloadManager compactSurface">
-      <div className="row">
-        <h3>Download queue</h3>
-        <button onClick={refreshDownloads}><RefreshCw size={16} />Refresh</button>
-      </div>
-      <div className="downloadForm">
-        <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://... direct model file, e.g. .safetensors/.gguf/.bin" />
-        <input value={filename} onChange={e => setFilename(e.target.value)} placeholder="optional filename" />
-        <button onClick={dl} disabled={busy || !url.trim()}><Download size={16} />Queue download</button>
-      </div>
-      <div className="downloadList">{downloads.length ? downloads.map(job => <DownloadJobCard key={job.id} job={job} onAction={downloadAction} />) : <div className="emptyState">No download jobs yet.</div>}</div>
-    </div>
-    </details>
-
-    <details className="advancedFinder">
-      <summary>Advanced: login, import validation, local registry</summary>
-      <div className="hfLogin">
-        <div>
-          <h3>Hugging Face login</h3>
-          <p>{hfStatus?.configured ? "Token aktif lokal. Dipakai untuk gated/private metadata dan download." : "Opsional, tapi berguna untuk gated/private model atau kalau terkena rate limit."}</p>
-        </div>
-        <div className="hfControls">
-          <input type="password" value={hfToken} onChange={e => setHfToken(e.target.value)} placeholder="hf_ token, stored locally only" />
-          <button onClick={saveHfToken} disabled={!hfToken.trim()}>Save token</button>
-          <button onClick={logoutHf} disabled={!hfStatus?.configured}><XCircle size={16} />Clear</button>
-        </div>
-      </div>
-      <div className="hfLogin">
-        <div>
-          <h3>GitHub login</h3>
-          <p>{githubStatus?.configured ? "Token aktif lokal. Dipakai untuk GitHub search/detail agar tidak cepat kena rate limit." : "Opsional, tapi berguna kalau GitHub membalas 403/rate limit."}</p>
-        </div>
-        <div className="hfControls">
-          <input type="password" value={githubToken} onChange={e => setGithubToken(e.target.value)} placeholder="github fine-grained token, stored locally only" />
-          <button onClick={saveGithubToken} disabled={!githubToken.trim()}>Save token</button>
-          <button onClick={logoutGithub} disabled={!githubStatus?.configured}><XCircle size={16} />Clear</button>
-        </div>
-      </div>
-      <div className="importValidator">
-      <div>
-        <h3>Import folder validation</h3>
-        <p>Validate a folder already under data/models before model-card review. Imports remain inactive until readiness and human review are complete.</p>
-      </div>
-      <div className="downloadForm">
-        <input value={importPath} onChange={e => setImportPath(e.target.value)} placeholder="C:\\...\\data\\models\\my-local-model" />
-        <button onClick={validateImportFolder} disabled={busy || !importPath.trim()}><FolderOpen size={16} />Validate</button>
-      </div>
-      {importResult && <ImportValidationResult result={importResult} />}
-    </div>
-      <LocalRegistryPanel
-      models={localModels}
-      drafts={cardDrafts}
-      errors={cardErrors}
-      savedPaths={savedCardPaths}
-      busyId={cardBusy}
-      onRefresh={refreshLocalModels}
-      onDraft={updateCardDraft}
-      onPrefill={prefillCardDraft}
-      onSave={saveModelCard}
-      selectedDetail={selectedModel}
-    />
-    </details>
-  </section>;
-}
-
-function HardwareAdvisor({ plan, onFind }: { plan: HardwarePlan; onFind?: (source: string, query: string) => void }) {
-  const { language } = useUiLanguage();
-  const profile = (plan.profile || {}) as HardwarePlan["profile"];
-  const gpus = asList<HardwarePlan["profile"]["gpus"][number]>(profile.gpus);
-  const runtimeSlots = asList<HardwarePlan["runtime_slots"][number]>(plan.runtime_slots);
-  const downloadHelp = (plan.download_help || {}) as HardwarePlan["download_help"];
-  const gpuSummary = gpus.length ? gpus.map(gpu => `${gpu.name} ${gpu.vram_gb ?? "?"}GB`).join(", ") : (language === "en" ? "GPU VRAM not detected" : "VRAM GPU tidak terdeteksi");
-  return <section className="hardwareAdvisor">
-    <div className="row">
-      <div>
-        <h3>Hardware</h3>
-        <p>{profile.tier_label}</p>
-      </div>
-      <span className="statusChip completed">{profile.tier}</span>
-    </div>
-    <div className="hardwareStats">
-      <div><Cpu size={16} /><span>CPU</span><b>{profile.cpu || (language === "en" ? "Unknown" : "Tidak diketahui")}</b><small>{profile.cpu_count ?? "?"} {language === "en" ? "cores" : "core"} / {profile.os || (language === "en" ? "Unknown OS" : "OS tidak diketahui")}</small></div>
-      <div><HardDrive size={16} /><span>RAM</span><b>{profile.ram_gb ? `${profile.ram_gb} GB` : (language === "en" ? "Unknown" : "Tidak diketahui")}</b><small>{language === "en" ? "System memory" : "Memori sistem"}</small></div>
-      <div><Activity size={16} /><span>GPU</span><b>{gpuSummary}</b><small>{language === "en" ? "Maximum VRAM" : "VRAM maksimum"} {profile.max_vram_gb ? `${profile.max_vram_gb} GB` : (language === "en" ? "unknown" : "tidak diketahui")}</small></div>
-    </div>
-    {onFind && <div className="slotRecommendations">
-      {runtimeSlots.map(item => <div className="slotRecommendation" key={item.slot}>
-        <div className="row"><b>{item.label}</b><span>{item.vram_estimate}</span></div>
-        <small>{item.task}</small>
-        <p>{item.recommendation}</p>
-        <small>{language === "en" ? "Suggested" : "Disarankan"}: {item.recommended_model}</small>
-        {onFind && <button onClick={() => onFind(item.source, item.query)}><Search size={16} />{language === "en" ? "Find candidates" : "Cari kandidat"}</button>}
-      </div>)}
-    </div>}
-    {onFind && <div className="downloadExplainer">
-      <b>{language === "en" ? "Download from MedRay" : "Unduh dari MedRay"}</b>
-      <span>{downloadHelp.queue || (language === "en" ? "Downloads are queued locally." : "Unduhan dimasukkan ke antrean lokal.")}</span>
-      <span>{downloadHelp.not_runtime || (language === "en" ? "Downloaded files remain inactive until review." : "File yang diunduh tetap nonaktif sampai selesai ditinjau.")}</span>
-      <span>{downloadHelp.next_step || (language === "en" ? "Complete the model-card review before runtime use." : "Selesaikan peninjauan kartu model sebelum digunakan oleh AI.")}</span>
-    </div>}
-    <small className="hardwareNote">{textList(profile.detection_notes).join(" ")}</small>
-  </section>;
-}
-
-function ModelDetailPanel({ model, busy, onClose, onQueueFile }: { model: Record<string, unknown>; busy: boolean; onClose: () => void; onQueueFile: (model: Record<string, unknown>, file: string) => void }) {
-  const readiness = (model.card_readiness || {}) as Record<string, unknown>;
-  const checks = asList<Record<string, unknown>>(readiness.checks);
-  const files = textList(model.files).slice(0, 8);
-  const tags = textList(model.tags).slice(0, 10);
-  const datasets = (textList(readiness.datasets).length ? textList(readiness.datasets) : textList(model.datasets)).slice(0, 6);
-  const criteria = asList<Record<string, unknown>>(model.fit_criteria).slice(0, 6);
-  return <section className="modelDetail">
-    <div className="row">
-      <div>
-        <h3>{String(model.name || model.id || "Model detail")}</h3>
-        <p>{busy ? "Loading model-card metadata..." : String(model.source_reference || "Readiness review before runtime use.")}</p>
-      </div>
-      <button onClick={onClose}><XCircle size={16} />Close</button>
-    </div>
-    <div className="readinessBand">
-      <div><span>MedRay/Odysseus fit</span><b>{String(model.fit_percent ?? "?")}%</b></div>
-      <div><span>Readiness</span><b>{String(readiness.score ?? 0)}/100</b></div>
-      <div><span>Status</span><b>{String(readiness.status || "not reviewed")}</b></div>
-      <div><span>Task</span><b>{String(readiness.pipeline_tag || model.pipeline_tag || model.task_type || "unknown")}</b></div>
-    </div>
-    {criteria.length > 0 && <div className="criteriaGrid">{criteria.map(item => <div key={String(item.label)}><b>{String(item.score)}%</b><span>{String(item.label)}</span><small>{String(item.reason || "")}</small></div>)}</div>}
-    <div className="readinessChecks">
-      {checks.map(check => <span key={String(check.id)} className={check.ok ? "ok" : "missing"}>{check.ok ? "OK" : "Needs"}: {String(check.label)}</span>)}
-    </div>
-    <div className="detailGrid">
-      <div><b>Provenance</b><small>Source: {String(model.source || "unknown")}</small><small>Datasets: {datasets.length ? datasets.join(", ") : "not declared"}</small><small>Updated: {String(model.last_modified || "unknown")}</small></div>
-      <div><b>Use boundary</b><small>{String(readiness.action_required || "Add/review a local model card before enabling analysis.")}</small><small>Downloaded files remain inactive until review.</small></div>
-      <div><b>Hardware notes</b><small>VRAM: {String(model.vram_estimate || "unknown")}</small><small>Quantization: {String(model.quantization || "unknown")}</small><small>Library: {String(model.library_name || "unknown")}</small></div>
-      <div><b>Access</b><small>License: {String(readiness.license || model.license || "unknown")}</small><small>Gated: {String(model.gated ?? false)}</small><small>Private: {String(model.private ?? false)}</small><small>Downloads/Likes: {String(model.downloads ?? "n/a")} / {String(model.likes ?? "n/a")}</small></div>
-    </div>
-    {tags.length > 0 && <div className="tagRow">{tags.map(tag => <span key={tag}>{tag}</span>)}</div>}
-    {files.length > 0 && <div className="fileList"><b>Files</b>{files.map(file => <div className="fileRow" key={file}><small>{file}</small>{fileLooksDownloadable(file) && <button onClick={() => onQueueFile(model, file)}><Download size={15} />Use for download</button>}</div>)}</div>}
-    {String(model.readme_excerpt || "").trim() && <details className="readmePreview"><summary>Model-card excerpt</summary><p>{String(model.readme_excerpt)}</p></details>}
+  return <section className="setupSection">
+    <h3>Imported models &amp; model cards</h3><p>Files in MedRay's model folder are detected automatically. Importing a file does not install its runtime. Load compatible GGUF or other weights in Ollama, LM Studio or your chosen server, then select that server model in Local AI.</p>
+    {error && <p role="alert">{error}</p>}
+    <label>Import a model file<input type="file" accept=".pt,.pth,.onnx,.safetensors,.gguf,.bin" disabled={busy} onChange={event => { const file = event.target.files?.[0]; if (file) { setBusy(true); setError(""); void setupApi.importFile(file).then(refreshLocalModels).catch(exc => setError(String(exc))).finally(() => setBusy(false)); } event.target.value = ""; }} /></label>
+    <details><summary>Check an existing model folder</summary><p>Enter a folder inside MedRay's model storage. This checks its files without running repository code.</p><label>Folder path<input value={importPath} onChange={event => setImportPath(event.target.value)} /></label><button disabled={busy || !importPath.trim()} onClick={validateImportFolder}>Check folder</button>{importResult && <ImportValidationResult result={importResult} />}</details>
+    <LocalRegistryPanel models={localModels.filter(model => !model.name.startsWith("nih-pc-chex-mimic"))} drafts={cardDrafts} errors={cardErrors} savedPaths={savedCardPaths} busyId={cardBusy} onRefresh={() => void refreshLocalModels().catch(exc => setError(String(exc)))} onDraft={updateCardDraft} onPrefill={prefillCardDraft} onSave={saveModelCard} selectedDetail={selectedDetail} onArchive={async model => { try { await setupApi.localAction("remove", model.id); await refreshLocalModels(); } catch (exc) { setError(String(exc)); } }} />
   </section>;
 }
 
@@ -2543,37 +2407,6 @@ function ImportValidationResult({ result }: { result: Record<string, unknown> })
   </div>;
 }
 
-function DownloadJobCard({ job, onAction }: { job: DownloadJob; onAction: (action: "pause" | "resume" | "cancel" | "retry" | "delete", id: string) => void }) {
-  const percent = Math.max(0, Math.min(100, Number(job.percent || 0)));
-  const canPause = ["queued", "downloading"].includes(job.status);
-  const canResume = ["pausing", "paused"].includes(job.status);
-  const canRetry = ["failed", "cancelled"].includes(job.status) || Boolean(job.retryable && job.status !== "downloading");
-  const canCancel = ["queued", "downloading", "paused"].includes(job.status);
-  return <div className="downloadJob">
-    <div className="row">
-      <b>{job.name || job.id}</b>
-      <span className={statusClass(job.status)}>{job.status}</span>
-    </div>
-    <div className="progressTrack"><div style={{ width: `${percent}%` }} /></div>
-    <div className="downloadMeta">
-      <span>{percent.toFixed(1)}%</span>
-      <span>{formatBytes(job.bytes_read)} / {formatBytes(job.total_bytes)}</span>
-      <span>{job.speed || "0 MB/s"}</span>
-      <span>ETA {job.eta || "unknown"}</span>
-    </div>
-    <small>{job.source || "manual URL"}</small>
-    <small>{job.target_path}</small>
-    {job.error && <div className="warn compactWarn">{job.error}</div>}
-    <div className="downloadActions">
-      {canPause && <button onClick={() => onAction("pause", job.id)}><Pause size={16} />Pause</button>}
-      {canResume && <button onClick={() => onAction("resume", job.id)}><Play size={16} />Resume</button>}
-      {canRetry && <button onClick={() => onAction("retry", job.id)}><RefreshCw size={16} />Retry</button>}
-      {canCancel && <button onClick={() => onAction("cancel", job.id)}><XCircle size={16} />Cancel</button>}
-      <button onClick={() => onAction("delete", job.id)}><Trash2 size={16} />Cleanup</button>
-    </div>
-  </div>;
-}
-
 function LocalRegistryPanel({
   models,
   drafts,
@@ -2585,6 +2418,7 @@ function LocalRegistryPanel({
   onPrefill,
   onSave,
   selectedDetail,
+  onArchive,
 }: {
   models: LocalModelArtifact[];
   drafts: Record<string, Record<string, string | boolean>>;
@@ -2596,13 +2430,14 @@ function LocalRegistryPanel({
   onPrefill: (model: LocalModelArtifact) => void;
   onSave: (model: LocalModelArtifact) => void;
   selectedDetail: Record<string, unknown> | null;
+  onArchive: (model: LocalModelArtifact) => void;
 }) {
   const installedModels = asList<LocalModelArtifact>(models);
   return <div className="localRegistry">
     <div className="row">
       <div>
-        <h3>Local installed registry</h3>
-        <p>Artifacts in data/models stay inactive until a local model card is complete and human-reviewed.</p>
+        <h3>Local files</h3>
+        <p>Review each model card here. Run and test the model through its compatible application in Local AI.</p>
       </div>
       <button onClick={onRefresh}><RefreshCw size={16} />Rescan</button>
     </div>
@@ -2617,8 +2452,9 @@ function LocalRegistryPanel({
       return <div className="localModel" key={model.id}>
         <div className="row">
           <b>{model.name}</b>
-          <span className={statusClass(model.runtime_eligible ? "installed" : "paused")}>{model.runtime_eligible ? "runtime eligible" : "review required"}</span>
+          <span className={statusClass(model.runtime_eligible ? "installed" : "paused")}>{model.runtime_eligible ? "Card reviewed · runtime test required" : "Needs review"}</span>
         </div>
+        <details><summary>Model card, files and validation</summary>
         <small>{model.artifact_type} / {model.artifact_path}</small>
         <small>{model.readiness || "readiness pending"} / {model.task_slot || "classification_model"}</small>
         <small>{model.human_review_status || (model.runtime_eligible ? "human_reviewed" : "human_review_required")} / {model.validation_evidence_status || "structured_evidence_incomplete"}</small>
@@ -2663,13 +2499,14 @@ function LocalRegistryPanel({
           <label><input type="checkbox" checked={Boolean(draft.human_reviewed)} onChange={e => onDraft(model.id, "human_reviewed", e.target.checked)} /> Human reviewed</label>
           <button onClick={() => onPrefill(model)} disabled={!selectedDetail}><FileText size={16} />Prefill from detail</button>
           <button onClick={() => onSave(model)} disabled={busyId === model.id}><ShieldCheck size={16} />Save card</button>
-        </div>
+        </div></details><button onClick={() => onArchive(model)}>Archive model</button>
       </div>;
     }) : <div className="emptyState">No local model artifacts found in data/models.</div>}</div>
   </div>;
 }
 
 function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase: CaseRecord | null; analysis: AnalysisResult | null; onOpenCase: (caseId: string, imageId?: string) => Promise<void> }) {
+  const { language } = useUiLanguage();
   const [labels, setLabels] = useState<ValidationLabel[]>([]);
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2993,7 +2830,7 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
         {result?.dataset_summary && <div className="summaryBox"><b>Dataset summary</b><pre>{JSON.stringify(result.dataset_summary, null, 2)}</pre></div>}
         {result ? <div className="metricsGrid">
           {metricEntries.map(([key, value]) => <div key={key}><span>{key.replaceAll("_", " ")}</span><b>{String(value ?? "n/a")}</b></div>)}
-        </div> : <p>Run validation untuk melihat metrics.</p>}
+        </div> : <p>{language === "en" ? "Run validation to view metrics." : "Jalankan validasi untuk melihat metrik."}</p>}
         {result?.runtime_snapshot_summary && <div className="summaryBox"><b>Runtime/model refs</b><pre>{JSON.stringify(result.runtime_snapshot_summary, null, 2)}</pre></div>}
         {result?.false_alert_burden && <div className="summaryBox"><b>False-alert burden</b><pre>{JSON.stringify(result.false_alert_burden, null, 2)}</pre></div>}
         {result?.missed_reference_summary && <div className="summaryBox"><b>Missed-reference review</b><pre>{JSON.stringify(result.missed_reference_summary, null, 2)}</pre></div>}
@@ -3010,10 +2847,6 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
       </section>
     </div>
   </section>;
-}
-
-function Hardware() {
-  return <div className="hardware"><h3>Hardware-aware rekomendasi X-ray</h3><p>Low VRAM 4GB-6GB: X-ray report/chat via Ollama, classifier ringan, VLM kecil bila tersedia.</p><p>Mid 8GB-12GB: CXR VLM compact/MedGemma 4B quantized.</p><p>High 16GB+: X-ray selective tools, classifier + localization + report.</p></div>;
 }
 
 function GeneralSettings({
@@ -3086,11 +2919,11 @@ function GeneralSettings({
         </div>
       </section>
       <section className="settingsCard">
-        <div className="settingsCardHeader"><Bot size={18} /><div><h3>{language === "en" ? "Optional AI model" : "Model AI opsional"}</h3><p>{language === "en" ? "The default mode already works. Open this only to connect Ollama or an API." : "Mode bawaan sudah dapat digunakan. Buka hanya untuk menghubungkan Ollama atau API."}</p></div></div>
+        <div className="settingsCardHeader"><Bot size={18} /><div><h3>{language === "en" ? "Optional AI models" : "Model AI opsional"}</h3><p>{language === "en" ? "The default mode already works. Open this to configure local runtimes, hosted providers, or specialist classifiers." : "Mode bawaan sudah dapat digunakan. Buka bagian ini untuk mengatur runtime lokal, provider online, atau classifier khusus."}</p></div></div>
         <button onClick={onOpenRuntime}>{language === "en" ? "Open AI settings" : "Buka pengaturan AI"}</button>
       </section>
       <details className="settingsDisclosure wideSettingsCard">
-        <summary><HardDrive size={17} /><span><b>{language === "en" ? "Advanced storage" : "Penyimpanan lanjutan"}</b><small>{language === "en" ? "Change the case database folder" : "Ubah folder database kasus"}</small></span>{loading && <span className="loadingPill">{language === "en" ? "Loading…" : "Memuat…"}</span>}</summary>
+        <summary><HardDrive size={17} /><span><b>{language === "en" ? "Database location" : "Penyimpanan lanjutan"}</b><small>{language === "en" ? "Change the case database folder" : "Ubah folder database kasus"}</small></span>{loading && <span className="loadingPill">{language === "en" ? "Loading…" : "Memuat…"}</span>}</summary>
         <section>
           <p>{language === "en" ? "Most users should keep the default location. Restart the backend after changing it." : "Sebagian besar pengguna sebaiknya memakai lokasi bawaan. Restart backend setelah mengubahnya."}</p>
           <div className="databaseLocationGrid">
@@ -3111,7 +2944,16 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   classification_model: "demo-classifier",
   segmentation_model: "disabled",
   grounding_model: "disabled",
+  review_depth: "balanced",
   localization_confidence_threshold: 0.25,
+  annotation_auto_accept_threshold: 0.9,
+  temperature: 0.2,
+  top_p: 0.95,
+  seed: -1,
+  max_output_tokens: 2048,
+  request_timeout_seconds: 180,
+  max_retries: 1,
+  download_connections: 4,
   chest_xray_model: "inherit",
   msk_xray_model: "inherit",
   abdomen_xray_model: "inherit",
@@ -3125,536 +2967,23 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   cpu_only: true,
 };
 
-function RuntimeSettings({ language }: { language: UiLanguage }) {
-  const { copy } = useUiLanguage();
-  const [config, setConfig] = useState<RuntimeConfig>(DEFAULT_RUNTIME_CONFIG);
-  const [mode, setMode] = useState<SimpleAiMode>("demo");
-  const [modelName, setModelName] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
-  const [health, setHealth] = useState<Record<string, unknown> | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const isEn = language === "en";
-
-  useEffect(() => {
-    let alive = true;
-    api.runtime()
-      .then(runtime => {
-        if (!alive) return;
-        const next = { ...DEFAULT_RUNTIME_CONFIG, ...runtime };
-        const nextMode: SimpleAiMode = next.primary_backend === "ollama"
-          ? "ollama"
-          : next.primary_backend === "openai-compatible"
-            ? "openai-compatible"
-            : "demo";
-        setConfig(next);
-        setMode(nextMode);
-        setModelName(nextMode === "demo" || String(next.vision_language_model).startsWith("demo") ? "" : String(next.vision_language_model || ""));
-      })
-      .catch(() => setStatus(isEn ? "Using safe default settings." : "Memakai pengaturan bawaan yang aman."))
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [isEn]);
-
-  function chooseMode(nextMode: SimpleAiMode) {
-    setMode(nextMode);
-    setStatus("");
-    setHealth(null);
-    if (nextMode === "demo") {
-      setModelName("");
-      setConfig(current => ({
-        ...current,
-        primary_backend: "demo",
-        chat_model: DEFAULT_RUNTIME_CONFIG.chat_model,
-        vision_language_model: DEFAULT_RUNTIME_CONFIG.vision_language_model,
-        classification_model: DEFAULT_RUNTIME_CONFIG.classification_model,
-        report_model: DEFAULT_RUNTIME_CONFIG.report_model,
-        allow_cloud: false,
-      }));
-      return;
-    }
-    setConfig(current => ({
-      ...current,
-      primary_backend: nextMode,
-      allow_cloud: nextMode === "openai-compatible" ? current.allow_cloud : false,
-    }));
-  }
-
-  async function saveSimpleSettings() {
-    if (mode !== "demo" && !modelName.trim()) {
-      setStatus(isEn ? "Enter the model name first." : "Isi nama model terlebih dahulu.");
-      return;
-    }
-    setBusy(true);
-    setStatus("");
-    try {
-      const next: RuntimeConfig = mode === "demo"
-        ? {
-          ...config,
-          primary_backend: "demo",
-          chat_model: DEFAULT_RUNTIME_CONFIG.chat_model,
-          vision_language_model: DEFAULT_RUNTIME_CONFIG.vision_language_model,
-          classification_model: DEFAULT_RUNTIME_CONFIG.classification_model,
-          report_model: DEFAULT_RUNTIME_CONFIG.report_model,
-          segmentation_model: "disabled",
-          grounding_model: "disabled",
-          allow_cloud: false,
-        }
-        : {
-          ...config,
-          primary_backend: mode,
-          chat_model: modelName.trim(),
-          vision_language_model: modelName.trim(),
-          report_model: modelName.trim(),
-          segmentation_model: "disabled",
-          grounding_model: "disabled",
-          allow_cloud: mode === "openai-compatible" ? config.allow_cloud : false,
-        };
-      setConfig(await api.saveRuntime(next));
-      setStatus(isEn ? "AI settings saved." : "Pengaturan AI tersimpan.");
-    } catch (exc) {
-      setStatus(`${isEn ? "Could not save settings" : "Pengaturan gagal disimpan"}: ${String(exc)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function testSimpleConnection() {
-    setBusy(true);
-    setStatus("");
-    setHealth(null);
-    try {
-      const result = await api.runtimeHealth();
-      setHealth(result);
-      setStatus(isEn ? "Connection check complete." : "Pemeriksaan koneksi selesai.");
-    } catch (exc) {
-      setStatus(`${isEn ? "Connection failed" : "Koneksi gagal"}: ${String(exc)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return <section className="panel settingsPage simpleAiSettings">
-    <div className="simpleSettingsHeader">
-      <div>
-        <span className="eyebrow">{isEn ? "OPTIONAL" : "OPSIONAL"}</span>
-        <h2>{copy.pages["Runtime Settings"]}</h2>
-        <p>{isEn ? "Explore MedRay with the Built-in Demo, or connect Ollama or a compatible API when you already have one." : "Coba alur MedRay dengan Demo bawaan, atau hubungkan Ollama maupun API kompatibel jika Anda sudah memilikinya."}</p>
-      </div>
-      {loading && <span className="loadingPill">{isEn ? "Loading…" : "Memuat…"}</span>}
-    </div>
-
-    <div className="readyMode">
-      <CheckCircle2 size={20} />
-      <div><b>{isEn ? "Recommended for first use: Built-in Demo" : "Disarankan untuk penggunaan pertama: Demo bawaan"}</b><span>{isEn ? "No setup required. Explore the workflow—not for clinical diagnosis." : "Tidak perlu pengaturan. Gunakan untuk mencoba alur kerja—bukan untuk diagnosis klinis."}</span></div>
-    </div>
-
-    <fieldset className="aiModePicker">
-      <legend>{isEn ? "Choose one mode" : "Pilih satu mode"}</legend>
-      <button type="button" className={mode === "demo" ? "selected" : ""} onClick={() => chooseMode("demo")} aria-pressed={mode === "demo"}>
-        <CheckCircle2 size={18} /><span><b>{isEn ? "Built-in Demo" : "Demo bawaan"}</b><small>{isEn ? "No setup · explore the workflow" : "Tanpa pengaturan · coba alur kerja"}</small></span>
-      </button>
-      <button type="button" className={mode === "ollama" ? "selected" : ""} onClick={() => chooseMode("ollama")} aria-pressed={mode === "ollama"}>
-        <HardDrive size={18} /><span><b>Ollama</b><small>{isEn ? "A model running on this computer" : "Model berjalan di komputer ini"}</small></span>
-      </button>
-      <button type="button" className={mode === "openai-compatible" ? "selected" : ""} onClick={() => chooseMode("openai-compatible")} aria-pressed={mode === "openai-compatible"}>
-        <Bot size={18} /><span><b>{isEn ? "Compatible API" : "API kompatibel"}</b><small>{isEn ? "For an endpoint you already have" : "Untuk API yang sudah Anda miliki"}</small></span>
-      </button>
-    </fieldset>
-
-    {mode === "demo" && <section className="aiSetupSimple">
-      <h3>{isEn ? "Demo mode is ready" : "Mode demo sudah siap"}</h3>
-      <p>{isEn ? "This uses built-in deterministic output to explore MedRay. It is not a validated clinical AI model. Save if you are switching back from another mode." : "Mode ini memakai output deterministik bawaan untuk mencoba MedRay. Ini bukan model AI klinis yang tervalidasi. Simpan jika Anda kembali dari mode lain."}</p>
-    </section>}
-
-    {mode === "ollama" && <section className="aiSetupSimple">
-      <div><h3>{isEn ? "Connect Ollama" : "Hubungkan Ollama"}</h3><p>{isEn ? "Enter the exact name shown by “ollama list”." : "Masukkan nama persis yang terlihat di “ollama list”."}</p></div>
-      <label>{isEn ? "Model name" : "Nama model"}<input value={modelName} onChange={event => setModelName(event.target.value)} placeholder="llama3.2-vision:11b" /></label>
-      <details className="compactDisclosure">
-        <summary>{isEn ? "Connection address" : "Alamat koneksi"}</summary>
-        <label>Ollama URL<input value={config.ollama_base_url} onChange={event => setConfig({ ...config, ollama_base_url: event.target.value })} placeholder="http://127.0.0.1:11434" /></label>
-      </details>
-      <details className="compactDisclosure">
-        <summary>{isEn ? "I have not installed Ollama yet" : "Saya belum memasang Ollama"}</summary>
-        <p>{isEn ? "Install Ollama, pull one model, then return here and enter its name." : "Pasang Ollama, unduh satu model, lalu kembali dan masukkan namanya."}</p>
-        <code>ollama pull llama3.2-vision:11b</code>
-      </details>
-    </section>}
-
-    {mode === "openai-compatible" && <section className="aiSetupSimple">
-      <div><h3>{isEn ? "Connect a compatible API" : "Hubungkan API kompatibel"}</h3><p>{isEn ? "Use this only when you already have an endpoint and model name." : "Gunakan hanya jika Anda sudah memiliki alamat API dan nama model."}</p></div>
-      <label>{isEn ? "Model name" : "Nama model"}<input value={modelName} onChange={event => setModelName(event.target.value)} placeholder="your-model-name" /></label>
-      <label>{isEn ? "API address" : "Alamat API"}<input value={config.openai_base_url} onChange={event => setConfig({ ...config, openai_base_url: event.target.value })} placeholder="http://127.0.0.1:8000/v1" /></label>
-      <label className="inlineCheck"><input type="checkbox" checked={config.allow_cloud} onChange={event => setConfig({ ...config, allow_cloud: event.target.checked })} />{isEn ? "This endpoint is allowed to receive case data" : "API ini diizinkan menerima data kasus"}</label>
-    </section>}
-
-    {status && <div className={status.includes("failed") || status.includes("gagal") || status.includes("Could not") ? "warn" : "pathNote"} role="status">{status}</div>}
-    <div className="simpleSetupActions">
-      <button className="primaryAction" onClick={saveSimpleSettings} disabled={loading || busy}>{busy ? (isEn ? "Working…" : "Memproses…") : (isEn ? "Save" : "Simpan")}</button>
-      {mode !== "demo" && <button onClick={testSimpleConnection} disabled={loading || busy}>{isEn ? "Test connection" : "Tes koneksi"}</button>}
-    </div>
-    {health && <details className="technicalDisclosure"><summary>{isEn ? "Technical test details" : "Detail teknis pengujian"}</summary><pre>{JSON.stringify(health, null, 2)}</pre></details>}
-    <details className="advancedModelTools" open={advancedOpen} onToggle={event => setAdvancedOpen(event.currentTarget.open)}>
-      <summary><Settings size={17} /><span><b>{isEn ? "Advanced AI setup" : "Pengaturan AI lanjutan"}</b><small>{isEn ? "Add optional models, check hardware, or open research tools" : "Tambahkan model opsional, periksa perangkat, atau buka alat riset"}</small></span></summary>
-      {advancedOpen && <div className="advancedModelToolsBody"><AdvancedRuntimeSettings language={language} /></div>}
-    </details>
-  </section>;
-}
-
-function AdvancedRuntimeSettings({ language }: { language: UiLanguage }) {
-  const { copy } = useUiLanguage();
-  const [config, setConfig] = useState<RuntimeConfig>(DEFAULT_RUNTIME_CONFIG);
-  const [health, setHealth] = useState<Record<string, unknown> | null>(null);
-  const [visionAdapters, setVisionAdapters] = useState<VisionAdapter[]>([]);
-  const [localModels, setLocalModels] = useState<LocalModelArtifact[]>([]);
-  const [hardwarePlan, setHardwarePlan] = useState<HardwarePlan | null>(null);
-  const [hardwareBusy, setHardwareBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
-  const [customRuntimeBackend, setCustomRuntimeBackend] = useState("ollama");
-  const [customRuntimeField, setCustomRuntimeField] = useState<keyof RuntimeConfig>("vision_language_model");
-  const [customModelName, setCustomModelName] = useState("");
-  const [runtimeGuide, setRuntimeGuide] = useState<"medgemma-ollama" | "medgemma-hf" | "torchxrayvision" | "status">("medgemma-ollama");
-  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>("overview");
-  const normalizeVisibleConfig = (runtime: RuntimeConfig): RuntimeConfig => ({ ...runtime });
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      setLoading(true);
-      setStatus("");
-      try {
-        const [runtime, adapters, locals] = await Promise.all([
-          api.runtime().catch(async exc => {
-            await delay(1200);
-            return api.runtime().catch(() => {
-              setStatus(language === "en" ? `Could not load runtime settings; using safe defaults: ${String(exc)}` : `Pengaturan runtime tidak dapat dimuat; menggunakan pengaturan aman bawaan: ${String(exc)}`);
-              return DEFAULT_RUNTIME_CONFIG;
-            });
-          }),
-          api.visionAdapters().catch(() => [] as VisionAdapter[]),
-          api.localModels().catch(() => [] as LocalModelArtifact[]),
-        ]);
-        if (!alive) return;
-        setConfig(normalizeVisibleConfig({ ...DEFAULT_RUNTIME_CONFIG, ...runtime }));
-        setVisionAdapters(asList<VisionAdapter>(adapters));
-        setLocalModels(asList<LocalModelArtifact>(locals));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    }
-    load();
-    return () => { alive = false; };
-  }, [reloadKey, language]);
-  const update = (key: keyof RuntimeConfig, value: string | boolean | number) => setConfig({ ...config, [key]: value });
-  const useAdapter = (adapter: VisionAdapter) => {
-    setConfig({
-      ...config,
-      primary_backend: adapter.runtime_backend || config.primary_backend,
-      [adapter.runtime_field]: adapter.id,
-    });
-    setCustomRuntimeField(adapter.runtime_field);
-    setStatus(language === "en" ? `${adapter.name} selected. Save settings to apply it.` : `${adapterName(adapter)} dipilih. Simpan pengaturan untuk menerapkannya.`);
-  };
-  const registeredLocalModels = asList<LocalModelArtifact>(localModels);
-  const registeredVisionAdapters = asList<VisionAdapter>(visionAdapters);
-  const localEligibleIds = new Set(registeredLocalModels.filter(model => model.runtime_eligible).map(model => model.id));
-  const localEligiblePaths = new Set(registeredLocalModels.filter(model => model.runtime_eligible).map(model => model.artifact_path));
-  function reviewGateWarning(key: keyof RuntimeConfig) {
-    const value = String(config[key] || "");
-    if (!value || value === "disabled" || value.startsWith("demo")) return "";
-    const inRegistry = registeredLocalModels.some(model => model.id === value || model.artifact_path === value);
-    const reviewRequired = inRegistry && !localEligibleIds.has(value) && !localEligiblePaths.has(value);
-    const dataModelsPath = value.toLowerCase().includes("data\\models") || value.toLowerCase().includes("data/models");
-    if (reviewRequired || (dataModelsPath && !localEligiblePaths.has(value))) {
-      return language === "en"
-        ? "Review required: local artifacts need a complete human-reviewed model card and local validation status before runtime use."
-        : "Perlu ditinjau: artefak lokal harus memiliki kartu model yang lengkap, sudah ditinjau manusia, dan memiliki status validasi lokal sebelum digunakan.";
-    }
-    return "";
-  }
-  const taskSlots: { key: keyof RuntimeConfig; label: string; description: string; example: string }[] = [
-    { key: "chat_model", label: language === "en" ? "Chat assistant" : "Asisten percakapan", description: language === "en" ? "Answers questions about the current review context." : "Menjawab pertanyaan tentang pemeriksaan yang sedang dibuka.", example: "qwen2.5:3b" },
-    { key: "vision_language_model", label: language === "en" ? "Image review (VLM)" : "Tinjau gambar (VLM)", description: language === "en" ? "Reads an X-ray image together with a text prompt." : "Membaca gambar X-ray bersama instruksi teks.", example: "llama3.2-vision:11b" },
-    { key: "classification_model", label: language === "en" ? "Finding classifier" : "Klasifikasi temuan", description: language === "en" ? "Produces finding labels or research probabilities." : "Menghasilkan label temuan atau probabilitas untuk riset.", example: "torchxrayvision:densenet121-res224-all" },
-    { key: "segmentation_model", label: language === "en" ? "Segmentation" : "Segmentasi", description: language === "en" ? "Creates pixel-level regions. Keep disabled without a reviewed adapter." : "Membuat area hingga tingkat piksel. Biarkan nonaktif tanpa penghubung model yang sudah ditinjau.", example: "disabled" },
-    { key: "grounding_model", label: language === "en" ? "Localization / boxes" : "Lokalisasi / kotak", description: language === "en" ? "Creates candidate locations or bounding boxes. Keep disabled until validated." : "Menandai kandidat lokasi atau kotak pembatas. Biarkan nonaktif sampai tervalidasi.", example: "disabled" },
-    { key: "report_model", label: language === "en" ? "Report drafting" : "Penyusunan laporan", description: language === "en" ? "Turns reviewed findings into a draft report." : "Mengubah temuan yang sudah ditinjau menjadi draf laporan.", example: "qwen2.5:3b" },
-  ];
-  const slotLabel = (key: keyof RuntimeConfig) => taskSlots.find(slot => slot.key === key)?.label || String(key).replaceAll("_", " ");
-  const selectedTask = taskSlots.find(slot => slot.key === customRuntimeField) || taskSlots[0];
-  const selectedAdapters = registeredVisionAdapters.filter(adapter => adapter.runtime_field === selectedTask.key);
-  const selectedLocalModels = registeredLocalModels.filter(model => (model.task_slot || "classification_model") === selectedTask.key);
-  function assignmentDisplay(key: keyof RuntimeConfig) {
-    const value = String(config[key] || "");
-    if (!value) return language === "en" ? "Not set" : "Belum diatur";
-    if (value.startsWith("demo")) return language === "en" ? "Built-in Demo" : "Demo bawaan";
-    if (value === "disabled") return language === "en" ? "Off" : "Nonaktif";
-    return value;
-  }
-  function adapterName(adapter: VisionAdapter) {
-    if (language === "en") return adapter.name;
-    if (adapter.id === "ollama-vlm-not-detected") return "VLM Ollama tidak terdeteksi";
-    if (adapter.id === "local:reviewed-ultralytics-detector") return "Pendeteksi MSK Ultralytics lokal yang sudah ditinjau";
-    return adapter.name;
-  }
-  function adapterTask(adapter: VisionAdapter) {
-    if (language === "en") return adapter.task;
-    if (adapter.id.startsWith("torchxrayvision:")) return "Klasifikasi multi-label CXR";
-    if (adapter.id === "local:reviewed-ultralytics-detector") return "Lokalisasi fraktur MSK dengan kotak pembatas";
-    if (adapter.id === "ollama-vlm-not-detected") return "Pemeriksaan layanan dan model Ollama";
-    if (adapter.runtime_backend === "ollama") return "Peninjauan gambar dengan VLM Ollama lokal";
-    return adapter.task;
-  }
-  function adapterInstallHint(adapter: VisionAdapter) {
-    if (language === "en") return adapter.install_hint;
-    if (adapter.id.startsWith("torchxrayvision:")) return "Pasang backend/requirements-optional.txt dan gunakan build PyTorch yang sesuai dengan komputer ini.";
-    if (adapter.id === "local:reviewed-ultralytics-detector") return "Impor artefak .pt lokal, lengkapi dan tinjau kartu modelnya, lalu pilih ID lokal tersebut sebagai model lokalisasi.";
-    if (adapter.id === "ollama-vlm-not-detected") return "Jalankan Ollama dan unduh model penglihatan seperti llama3.2-vision atau llava, lalu muat ulang AI.";
-    return adapter.install_hint;
-  }
-  function adapterMissingDependencies(adapter: VisionAdapter) {
-    const missing = textList(adapter.missing_dependencies);
-    if (language === "en") return missing.join(", ") || "optional dependencies";
-    if (adapter.id === "ollama-vlm-not-detected") return "model penglihatan Ollama";
-    return missing.join(", ") || "dependensi opsional";
-  }
-  const anatomySlots: { key: keyof RuntimeConfig; label: string; example: string }[] = [
-    { key: "chest_xray_model", label: language === "en" ? "Chest" : "Dada", example: "inherit" },
-    { key: "msk_xray_model", label: "MSK / trauma", example: "inherit" },
-    { key: "abdomen_xray_model", label: "Abdomen / KUB", example: "inherit" },
-    { key: "spine_xray_model", label: language === "en" ? "Spine" : "Tulang belakang", example: "inherit" },
-    { key: "skull_facial_xray_model", label: language === "en" ? "Skull / facial" : "Tengkorak / wajah", example: "inherit" },
-    { key: "general_xray_model", label: language === "en" ? "Unknown / general" : "Tidak diketahui / umum", example: "disabled" },
-  ];
-  function selectTask(key: keyof RuntimeConfig) {
-    const currentValue = String(config[key] || "");
-    setCustomRuntimeField(key);
-    setCustomModelName(!currentValue || currentValue.startsWith("demo") || currentValue === "disabled" || currentValue === "inherit" ? "" : currentValue);
-    setStatus("");
-  }
-  function useCustomModel() {
-    const modelName = customModelName.trim();
-    if (!modelName) {
-      setStatus(language === "en" ? "Enter a custom model name first." : "Isi nama model terlebih dahulu.");
-      return;
-    }
-    setConfig({
-      ...config,
-      primary_backend: customRuntimeBackend,
-      [customRuntimeField]: modelName,
-    });
-    setStatus(
-      language === "en"
-        ? `${slotLabel(customRuntimeField)} updated. Save settings to apply the change.`
-        : `${slotLabel(customRuntimeField)} diperbarui. Simpan pengaturan untuk menerapkan perubahan.`
-    );
-  }
-  async function save() {
-    setStatus("");
-    try {
-      const configToSave = normalizeVisibleConfig(config);
-      setConfig(await api.saveRuntime(configToSave));
-      setStatus(language === "en" ? "Runtime settings saved." : "Pengaturan AI tersimpan.");
-    } catch (exc) {
-      setStatus(`${language === "en" ? "Could not save settings" : "Pengaturan tidak dapat disimpan"}: ${String(exc)}`);
-    }
-  }
-  async function checkRuntime() {
-    setStatus("");
-    try {
-      setHealth(await api.runtimeHealth());
-    } catch (exc) {
-      setStatus(`${language === "en" ? "Runtime check failed" : "Pemeriksaan koneksi AI gagal"}: ${String(exc)}`);
-    }
-  }
-  async function checkHardware() {
-    setHardwareBusy(true);
-    setStatus("");
-    try {
-      setHardwarePlan(await api.hardwareRecommendations());
-    } catch (exc) {
-      setStatus(`${language === "en" ? "Hardware check failed" : "Pemeriksaan perangkat gagal"}: ${String(exc)}`);
-    } finally {
-      setHardwareBusy(false);
-    }
-  }
-  const settingsNavigation: { id: SettingsSection; label: string; detail: string }[] = [
-    { id: "overview", label: language === "en" ? "Overview" : "Ringkasan", detail: language === "en" ? "Current state" : "Status saat ini" },
-    { id: "runtime", label: language === "en" ? "AI connection" : "Koneksi AI", detail: language === "en" ? "Model source and safety" : "Sumber model dan keamanan" },
-    { id: "models", label: language === "en" ? "Add a model" : "Tambah model", detail: language === "en" ? "Guided setup" : "Langkah terpandu" },
-    { id: "guides", label: language === "en" ? "Guides" : "Panduan", detail: language === "en" ? "Setup instructions" : "Petunjuk pengaturan" },
-  ];
-  function goToSettingsSection(section: SettingsSection) {
-    setActiveSettingsSection(section);
-  }
-  const eligibleModelCount = registeredLocalModels.filter(model => model.runtime_eligible).length;
-  return <section className="panel settingsPage">
-    <div className="row"><h2>{language === "en" ? "Advanced AI configuration" : "Konfigurasi AI lanjutan"}</h2><div className="heroActions"><button onClick={() => setReloadKey(reloadKey + 1)} disabled={loading}><RefreshCw size={16} />{language === "en" ? "Reload runtime" : "Muat ulang AI"}</button><button onClick={checkHardware} disabled={hardwareBusy}><Cpu size={16} />{hardwareBusy ? (language === "en" ? "Checking…" : "Memeriksa…") : (language === "en" ? "Check hardware" : "Periksa perangkat")}</button>{loading && <span className="loadingPill">{language === "en" ? "Loading runtime…" : "Memuat AI…"}</span>}</div></div>
-    {status && <div className={status.includes("failed") || status.includes("gagal") ? "warn" : "pathNote"}>{status}</div>}
-    {hardwarePlan && <HardwareAdvisor plan={hardwarePlan} />}
-    <div className="settingsOverview" id="settings-overview" hidden={activeSettingsSection !== "overview"}>
-      <div className="settingsOverviewHeader"><div><span className="eyebrow">{language === "en" ? "OPTIONAL AI SETTINGS" : "PENGATURAN AI OPSIONAL"}</span><h3>{language === "en" ? "Additional AI models" : "Model AI tambahan"}</h3><p>{language === "en" ? "MedRay already works in Built-in Demo. Change this page only when connecting an additional model." : "MedRay sudah dapat dipakai dalam Demo bawaan. Ubah halaman ini hanya jika ingin menghubungkan model tambahan."}</p></div><span className="settingsSafetyBadge"><ShieldCheck size={15} />{config.allow_cloud ? (language === "en" ? "Cloud allowed" : "Cloud diizinkan") : (language === "en" ? "Local only" : "Lokal saja")}</span></div>
-      <div className="settingsStatusGrid">
-        <div><span>{language === "en" ? "Analysis mode" : "Mode analisis"}</span><b>{friendlyAnalysisMode(config.primary_backend, language)}</b><small>{config.cpu_only ? (language === "en" ? "Resource-saving mode" : "Hemat sumber daya") : (language === "en" ? "GPU allowed" : "GPU diizinkan")}</small></div>
-        <div><span>{language === "en" ? "Reviewed local models" : "Model lokal yang sudah ditinjau"}</span><b>{eligibleModelCount} / {registeredLocalModels.length}</b><small>{language === "en" ? "eligible for runtime" : "siap digunakan oleh AI"}</small></div>
-        <div><span>{language === "en" ? "Localization" : "Lokalisasi"}</span><b>{assignmentDisplay("grounding_model")}</b><small>{config.grounding_model === "disabled" ? (language === "en" ? "No localization model is active" : "Tidak ada model lokalisasi aktif") : (language === "en" ? "Model review gate applies" : "Model harus melewati tahap peninjauan")}</small></div>
-        <div><span>{language === "en" ? "Threshold" : "Ambang batas"}</span><b>{config.localization_confidence_threshold}</b><small>{language === "en" ? "localization confidence" : "keyakinan lokalisasi"}</small></div>
-      </div>
-      {config.grounding_model === "disabled" && <div className="settingsRoadmapNote"><Crosshair size={16} /><span><b>{language === "en" ? "Roadmap focus:" : "Fokus pengembangan:"}</b> {language === "en" ? "Keep localization off until a focused, human-reviewed fracture detector is validated end to end." : "Biarkan lokalisasi nonaktif hingga pendeteksi fraktur yang khusus dan sudah ditinjau manusia selesai divalidasi secara menyeluruh."}</span></div>}
-    </div>
-    <nav className="settingsNav" aria-label={language === "en" ? "Settings sections" : "Bagian pengaturan"}>
-      {settingsNavigation.map(item => <button key={item.id} className={activeSettingsSection === item.id ? "active" : ""} onClick={() => goToSettingsSection(item.id)} aria-current={activeSettingsSection === item.id ? "page" : undefined}><b>{item.label}</b><small>{item.detail}</small></button>)}
-    </nav>
-    <div className="settingsHub" hidden={activeSettingsSection === "overview"}>
-      <div className="settingsGroupLabel" hidden={activeSettingsSection !== "runtime"}><span>01</span><div><b>{language === "en" ? "AI connection" : "Koneksi AI"}</b><small>{language === "en" ? "Choose how an optional model connects." : "Atur cara model tambahan dihubungkan."}</small></div></div>
-      <section className="settingsCard" id="settings-section-runtime" hidden={activeSettingsSection !== "runtime"}>
-        <div className="settingsCardHeader"><Cpu size={18} /><div><h3>{copy.connectionSettings}</h3><p>{copy.connectionDescription}</p></div></div>
-        <div className="settingsGrid compactSettingsGrid">
-          <label>Ollama base URL<input value={config.ollama_base_url} onChange={e => update("ollama_base_url", e.target.value)} placeholder="http://127.0.0.1:11434" /></label>
-          <label>OpenAI-compatible base URL<input value={config.openai_base_url} onChange={e => update("openai_base_url", e.target.value)} placeholder="http://127.0.0.1:8000/v1" /></label>
-        </div>
-      </section>
-      <section className="settingsCard wideSettingsCard" hidden={activeSettingsSection !== "guides"}>
-        <div className="settingsCardHeader"><Download size={18} /><div><h3>{copy.programSetup}</h3><p>{copy.programSetupDescription}</p></div></div>
-        <div className="programSetupGrid">
-          <div><b>Ollama</b><span>{language === "en" ? "Install it for straightforward local chat, report, or VLM models. Use Ollama models or compatible GGUF models." : "Pasang Ollama untuk menjalankan model chat, laporan, atau VLM secara lokal. Gunakan model Ollama atau model GGUF yang kompatibel."}</span><code>ollama pull qwen2.5:3b</code></div>
-          <div><b>Hugging Face/local</b><span>{language === "en" ? "Use this for a Transformers, PyTorch, or Safetensors repository rather than an Ollama GGUF model." : "Gunakan opsi ini untuk repositori Transformers, PyTorch, atau Safetensors, bukan untuk model GGUF Ollama."}</span><code>.\.venv\Scripts\python.exe -m pip install -r backend\requirements-optional.txt</code></div>
-          <div><b>{language === "en" ? "GGUF bridge" : "Penghubung GGUF"}</b><span>{language === "en" ? "Ollama can run or import a compatible GGUF file. Safetensors usually needs conversion or another compatible local runtime." : "Ollama dapat menjalankan atau mengimpor file GGUF yang kompatibel. Safetensors biasanya memerlukan konversi atau mesin AI lokal lain yang kompatibel."}</span><code>ollama create my-model -f Modelfile</code></div>
-          <div><b>GPU / CUDA</b><span>{language === "en" ? "Optional, but useful for larger local Transformers models. Keep CPU-only enabled for safest low-VRAM use." : "Opsional, tetapi berguna untuk model Transformers lokal yang besar. Aktifkan mode hanya CPU jika memori GPU terbatas."}</span><code>nvidia-smi</code></div>
-        </div>
-      </section>
-      <section className="settingsCard wideSettingsCard" id="settings-section-guides" hidden={activeSettingsSection !== "guides"}>
-        <div className="settingsCardHeader"><BookOpen size={18} /><div><h3>{copy.runtimeGuide}</h3><p>{copy.runtimeGuideDescription}</p></div></div>
-        <div className="guideTabs">
-          <button className={runtimeGuide === "medgemma-ollama" ? "active" : ""} onClick={() => setRuntimeGuide("medgemma-ollama")}>MedGemma Ollama</button>
-          <button className={runtimeGuide === "medgemma-hf" ? "active" : ""} onClick={() => setRuntimeGuide("medgemma-hf")}>MedGemma HF-local</button>
-          <button className={runtimeGuide === "torchxrayvision" ? "active" : ""} onClick={() => setRuntimeGuide("torchxrayvision")}>TorchXRayVision</button>
-          <button className={runtimeGuide === "status" ? "active" : ""} onClick={() => setRuntimeGuide("status")}>{language === "en" ? "Workflow status" : "Status alur kerja"}</button>
-        </div>
-        {runtimeGuide === "medgemma-ollama" && <div className="runtimeGuide">
-          <div><b>{language === "en" ? "Best path for this app right now" : "Jalur paling sesuai untuk aplikasi saat ini"}</b><span>{language === "en" ? "Use an Ollama/GGUF MedGemma-compatible model name, then assign it to Image review. The current workflow can call an Ollama VLM for image review." : "Gunakan nama model MedGemma yang kompatibel dengan Ollama/GGUF, lalu pasangkan ke Tinjau gambar. Alur kerja saat ini dapat memanggil VLM Ollama untuk meninjau gambar."}</span></div>
-          <ol>
-            <li>{language === "en" ? "Install Ollama and start its service." : "Pasang Ollama dan jalankan layanannya."}</li>
-            <li>{language === "en" ? "Pull or create a quantized GGUF vision model in Ollama." : "Unduh atau buat model penglihatan GGUF terkuantisasi di Ollama."}</li>
-            <li>{language === "en" ? "Open Add a model, choose Image review, enter the Ollama model name, then save the settings." : "Buka Tambah model, pilih Tinjau gambar, masukkan nama model Ollama, lalu simpan pengaturannya."}</li>
-          </ol>
-          <code>ollama pull llama3.2-vision:11b{"\n"}{language === "en" ? "# or:" : "# atau:"} ollama create medgemma-local -f Modelfile</code>
-        </div>}
-        {runtimeGuide === "medgemma-hf" && <div className="runtimeGuide">
-          <div><b>{language === "en" ? "Native Hugging Face path" : "Jalur Hugging Face langsung"}</b><span>{language === "en" ? "Use this for a Transformers or Safetensors repository such as google/medgemma-1.5-4b-it. MedRay can store the setting, but direct local HF image inference still needs a compatible image-text adapter." : "Gunakan opsi ini untuk repositori Transformers atau Safetensors seperti google/medgemma-1.5-4b-it. MedRay dapat menyimpan pengaturannya, tetapi inferensi gambar HF lokal masih memerlukan penghubung gambar-teks yang kompatibel."}</span></div>
-          <ol>
-            <li>{language === "en" ? "Accept the model terms on Hugging Face, then sign in locally." : "Setujui persyaratan model di Hugging Face, lalu masuk secara lokal."}</li>
-            <li>{language === "en" ? "Install the optional runtime dependencies." : "Pasang dependensi AI opsional."}</li>
-            <li>{language === "en" ? "After a compatible HF-local adapter is enabled, choose Imported Hugging Face / local model in Add a model." : "Setelah penghubung HF lokal yang kompatibel diaktifkan, pilih Model Hugging Face / lokal yang diimpor di Tambah model."}</li>
-          </ol>
-          <code>hf auth login{"\n"}.\\.venv\\Scripts\\python.exe -m pip install -r backend\\requirements-optional.txt{"\n"}google/medgemma-1.5-4b-it</code>
-        </div>}
-        {runtimeGuide === "torchxrayvision" && <div className="runtimeGuide">
-          <div><b>{language === "en" ? "Classifier that is already wired" : "Pengklasifikasi yang sudah terhubung"}</b><span>{language === "en" ? "TorchXRayVision is the current local CXR classifier adapter. Install optional dependencies, reload the runtime, then choose Finding classifier in Add a model." : "TorchXRayVision adalah penghubung pengklasifikasi CXR lokal saat ini. Pasang dependensi opsional, muat ulang AI, lalu pilih Klasifikasi temuan di Tambah model."}</span></div>
-          <ol>
-            <li>{language === "en" ? "Install the optional requirements." : "Pasang dependensi opsional."}</li>
-            <li>{language === "en" ? "Reload the runtime." : "Muat ulang AI."}</li>
-            <li>{language === "en" ? "Open Add a model, choose Finding classifier, then select the TorchXRayVision adapter." : "Buka Tambah model, pilih Klasifikasi temuan, lalu pilih penghubung TorchXRayVision."}</li>
-          </ol>
-          <code>.\\.venv\\Scripts\\python.exe -m pip install -r backend\\requirements-optional.txt{"\n"}torchxrayvision:densenet121-res224-all</code>
-        </div>}
-        {runtimeGuide === "status" && <div className="runtimeGuide statusGuide">
-          <div><CheckCircle2 size={16} /><b>Ollama VLM</b><span>{language === "en" ? "Already connected to Run AI Workflow for image review when backend is Ollama and Vision-language has a real model name." : "Sudah tersambung ke Jalankan Analisis untuk meninjau gambar jika Ollama dipilih dan nama model VLM sudah diisi."}</span></div>
-          <div><CheckCircle2 size={16} /><b>TorchXRayVision</b><span>{language === "en" ? "Already connected for CXR multi-label classification." : "Sudah tersambung untuk klasifikasi multi-label CXR."}</span></div>
-          <div><CheckCircle2 size={16} /><b>{language === "en" ? "Ollama report model" : "Model laporan Ollama"}</b><span>{language === "en" ? "Already connected for Indonesian report drafting when Report slot has a real Ollama model name." : "Sudah tersambung untuk menyusun draf laporan berbahasa Indonesia jika tugas Laporan berisi nama model Ollama yang valid."}</span></div>
-          <div><XCircle size={16} /><b>{language === "en" ? "HF-local MedGemma image workflow" : "Alur gambar MedGemma HF lokal"}</b><span>{language === "en" ? "Configuration UI is ready, but direct Transformers image-text inference still needs the adapter implementation." : "Antarmuka konfigurasi sudah siap, tetapi inferensi gambar-teks Transformers secara langsung masih memerlukan penghubung model."}</span></div>
-        </div>}
-      </section>
-      <section className="settingsCard" hidden={activeSettingsSection !== "runtime"}>
-        <div className="settingsCardHeader"><Bot size={18} /><div><h3>{copy.runtimeSettings}</h3><p>{copy.runtimeDescription}</p></div></div>
-        <div className="settingsGrid compactSettingsGrid">
-          <label>{language === "en" ? "Model source" : "Sumber model"}<select value={config.primary_backend} onChange={e => update("primary_backend", e.target.value)}><option value="demo">{language === "en" ? "Built-in Demo (no clinical AI model)" : "Demo bawaan (tanpa model AI klinis)"}</option><option value="ollama">{language === "en" ? "Ollama — local model" : "Ollama — model lokal"}</option><option value="openai-compatible">{language === "en" ? "Connected compatible API" : "API kompatibel yang terhubung"}</option><option value="huggingface-local">{language === "en" ? "Hugging Face — imported local model" : "Hugging Face — model lokal yang diimpor"}</option><option value="medrax-tool-pipeline">{language === "en" ? "MedRAX — tool pipeline" : "MedRAX — rangkaian alat"}</option></select></label>
-          <label><input type="checkbox" checked={config.cpu_only} onChange={e => update("cpu_only", e.target.checked)} />{language === "en" ? "CPU only / safer for low VRAM" : "Hanya CPU / lebih aman untuk VRAM rendah"}</label>
-          <label><input type="checkbox" checked={config.allow_cloud} onChange={e => update("allow_cloud", e.target.checked)} />{language === "en" ? "Allow cloud endpoints" : "Izinkan API cloud"}</label>
-          <label>{language === "en" ? "Localization threshold" : "Ambang batas lokalisasi"}<input type="number" min="0.05" max="0.95" step="0.05" value={config.localization_confidence_threshold} onChange={e => update("localization_confidence_threshold", Number(e.target.value))} /></label>
-        </div>
-      </section>
-      <div className="settingsGroupLabel" id="settings-section-models" hidden={activeSettingsSection !== "models"}><span>02</span><div><b>{language === "en" ? "Add one AI capability" : "Tambahkan satu kemampuan AI"}</b><small>{language === "en" ? "Configure only the job you need now." : "Atur hanya tugas yang sedang Anda butuhkan."}</small></div></div>
-      <section className="guidedModelSetup wideSettingsCard" hidden={activeSettingsSection !== "models"}>
-        <div className="guidedSetupIntro"><span className="eyebrow">{language === "en" ? "STEP 1" : "LANGKAH 1"}</span><h3>{language === "en" ? "What should the model do?" : "Model ini akan digunakan untuk apa?"}</h3><p>{language === "en" ? "Choose one job. You can return later to configure another." : "Pilih satu tugas. Anda dapat kembali nanti untuk mengatur tugas lainnya."}</p></div>
-        <div className="modelJobPicker">
-          {taskSlots.map(slot => <button type="button" key={slot.key} className={selectedTask.key === slot.key ? "selected" : ""} onClick={() => selectTask(slot.key)} aria-pressed={selectedTask.key === slot.key}>
-            <span><b>{slot.label}</b><small>{slot.description}</small></span><code title={String(config[slot.key])}>{assignmentDisplay(slot.key)}</code>
-          </button>)}
-        </div>
-        <div className="selectedModelSetup">
-          <div className="selectedModelHeading"><span className="stepNumber">2</span><div><h3>{selectedTask.label}</h3><p>{selectedTask.description}</p></div></div>
-          <div className="selectedModelFields">
-            <label>{language === "en" ? "Where does the model run?" : "Model dijalankan dari mana?"}<select value={customRuntimeBackend} onChange={event => setCustomRuntimeBackend(event.target.value)}><option value="ollama">{language === "en" ? "Ollama on this computer" : "Ollama di komputer ini"}</option><option value="openai-compatible">{language === "en" ? "Compatible API" : "API kompatibel"}</option><option value="huggingface-local">{language === "en" ? "Imported Hugging Face / local model" : "Model Hugging Face / lokal yang diimpor"}</option><option value="medrax-tool-pipeline">{language === "en" ? "MedRAX tool pipeline" : "Rangkaian alat MedRAX"}</option></select></label>
-            <label>{language === "en" ? "Exact model name" : "Nama model persis"}<input value={customModelName} onChange={event => setCustomModelName(event.target.value)} placeholder={selectedTask.example} /><small>{language === "en" ? "Use the name shown by your runtime." : "Gunakan nama yang ditampilkan oleh Ollama atau API Anda."}</small></label>
-          </div>
-          <div className="selectedModelExample"><span>{language === "en" ? "Example" : "Contoh"}</span><code>{selectedTask.example}</code><small>{selectedTask.example === "disabled" ? (language === "en" ? "Leave this job disabled unless you have a reviewed adapter." : "Biarkan tugas ini nonaktif kecuali Anda memiliki penghubung model yang sudah ditinjau.") : (language === "en" ? "Example only; availability depends on your runtime." : "Ini hanya contoh; ketersediaannya bergantung pada Ollama atau API Anda.")}</small></div>
-          {reviewGateWarning(selectedTask.key) && <div className="warn">{reviewGateWarning(selectedTask.key)}</div>}
-          <button className="primaryAction assignModelButton" onClick={useCustomModel} disabled={!customModelName.trim()}>{language === "en" ? `Assign to ${selectedTask.label}` : `Pasangkan ke ${selectedTask.label}`}</button>
-          <small className="saveReminder">{language === "en" ? "This prepares the change. Use Save settings below to apply it." : "Ini menyiapkan perubahan. Gunakan Simpan pengaturan di bawah untuk menerapkannya."}</small>
-        </div>
-      </section>
-
-      <section className="settingsCard wideSettingsCard relevantModelChoices" hidden={activeSettingsSection !== "models"}>
-        <div className="settingsCardHeader"><CheckCircle2 size={18} /><div><h3>{language === "en" ? `Detected choices for ${selectedTask.label}` : `Pilihan terdeteksi untuk ${selectedTask.label}`}</h3><p>{language === "en" ? "Select a ready option, or use the exact-name form above." : "Pilih opsi yang siap, atau gunakan formulir nama persis di atas."}</p></div></div>
-        {!selectedAdapters.length && !selectedLocalModels.length && <div className="registryEmpty"><b>{language === "en" ? "No automatic choices detected" : "Belum ada pilihan otomatis"}</b><span>{language === "en" ? "That is okay—enter the exact model name above if it already exists in Ollama or your API." : "Tidak masalah—masukkan nama model persis di atas jika model sudah tersedia di Ollama atau API Anda."}</span></div>}
-        <div className="adapterGrid">
-          {selectedAdapters.map(adapter => <div className="adapterRow" key={adapter.id}>
-            <div className="adapterTitle"><b>{adapterName(adapter)}</b><span className={adapter.available ? "statusReady" : "statusMissing"}>{adapter.available ? (language === "en" ? "Ready" : "Siap") : (language === "en" ? "Setup needed" : "Perlu diatur")}</span></div>
-            <span>{adapterTask(adapter)}</span>
-            {!adapter.available && <small><b>{language === "en" ? "Missing:" : "Belum tersedia:"}</b> {adapterMissingDependencies(adapter)}</small>}
-            {!adapter.available && <small><b>{language === "en" ? "Next step:" : "Langkah berikutnya:"}</b> {adapterInstallHint(adapter)}</small>}
-            <button onClick={() => useAdapter(adapter)} disabled={!adapter.available}>{language === "en" ? "Select this adapter" : "Pilih penghubung ini"}</button>
-          </div>)}
-          {selectedLocalModels.map(model => <div className="adapterRow" key={model.id}>
-            <div className="adapterTitle"><b>{model.name}</b><span className={model.runtime_eligible ? "statusReady" : "statusMissing"}>{model.runtime_eligible ? (language === "en" ? "Reviewed" : "Sudah ditinjau") : (language === "en" ? "Review needed" : "Perlu ditinjau")}</span></div>
-            <small>{model.artifact_path}</small><small>{model.safety_note}</small>
-            <button onClick={() => { update(selectedTask.key, model.id); setStatus(language === "en" ? `${model.name} selected. Save settings to apply it.` : `${model.name} dipilih. Simpan pengaturan untuk menerapkannya.`); }} disabled={!model.runtime_eligible}>{language === "en" ? "Select this model" : "Pilih model ini"}</button>
-          </div>)}
-        </div>
-      </section>
-
-      <details className="advancedAiDisclosure wideSettingsCard" hidden={activeSettingsSection !== "models"}>
-        <summary><span><b>{language === "en" ? "Current model assignments" : "Model yang sedang dipasangkan"}</b><small>{language === "en" ? "Review or edit all six jobs" : "Tinjau atau edit seluruh enam tugas"}</small></span></summary>
-        <div className="assignmentList">{taskSlots.map(slot => <button type="button" key={slot.key} onClick={() => selectTask(slot.key)}><span><b>{slot.label}</b><small>{slot.description}</small></span><code title={String(config[slot.key])}>{assignmentDisplay(slot.key)}</code></button>)}</div>
-      </details>
-
-      <details className="advancedAiDisclosure wideSettingsCard" hidden={activeSettingsSection !== "models"}>
-        <summary><span><b>{language === "en" ? "Specialist model for a body area" : "Model khusus untuk area tubuh"}</b><small>{language === "en" ? "Optional—most users should keep the defaults" : "Opsional—sebagian besar pengguna sebaiknya mempertahankan bawaan"}</small></span></summary>
-        <div className="advancedAiDisclosureBody">
-          <div className="routingLegend"><span><code>inherit</code>{language === "en" ? "Use the Image review model" : "Gunakan model Tinjau gambar"}</span><span><code>disabled</code>{language === "en" ? "Do not run a specialist model" : "Jangan jalankan model khusus"}</span><span><code>model-name</code>{language === "en" ? "Use a reviewed specialist model" : "Gunakan model khusus yang sudah ditinjau"}</span></div>
-          <div className="settingsGrid anatomySlotGrid">{anatomySlots.map(slot => <label key={slot.key}>{slot.label}<input data-testid={`anatomy-slot-${String(slot.key)}`} value={String(config[slot.key])} onChange={event => update(slot.key, event.target.value)} placeholder={slot.example} />{reviewGateWarning(slot.key) && <small className="caution">{reviewGateWarning(slot.key)}</small>}</label>)}</div>
-        </div>
-      </details>
-
-      <details className="advancedAiDisclosure wideSettingsCard" hidden={activeSettingsSection !== "models"}>
-        <summary><span><b>{language === "en" ? "Examples and research candidates" : "Contoh dan kandidat riset"}</b><small>{language === "en" ? "Reference list—not automatically installed or clinically validated" : "Daftar referensi—tidak otomatis terpasang atau tervalidasi klinis"}</small></span></summary>
-        <div className="advancedAiDisclosureBody programSetupGrid">
-          <div><b>{language === "en" ? "Ollama vision models" : "Model penglihatan Ollama"}</b><span>{language === "en" ? "Examples for local image review when supported by your Ollama installation." : "Contoh untuk peninjauan gambar lokal jika didukung oleh instalasi Ollama Anda."}</span><code>llama3.2-vision / llava</code></div>
-          <div><b>TorchXRayVision</b><span>{language === "en" ? "CXR multi-label classifier baseline." : "Model dasar untuk klasifikasi CXR dengan beberapa label."}</span><a href="https://github.com/mlmed/torchxrayvision" target="_blank" rel="noreferrer">GitHub</a></div>
-          <div><b>MedGemma</b><span>{language === "en" ? "Medical VLM research path; requires a compatible reviewed runtime." : "Pilihan riset VLM medis; memerlukan mesin AI kompatibel yang sudah ditinjau."}</span><a href="https://huggingface.co/google/medgemma-1.5-4b-it" target="_blank" rel="noreferrer">Hugging Face</a></div>
-          <div><b>OpenCXR</b><span>{language === "en" ? "Research utilities and future adapter candidate." : "Utilitas riset dan calon penghubung model berikutnya."}</span><a href="https://github.com/DIAGNijmegen/opencxr" target="_blank" rel="noreferrer">GitHub</a></div>
-        </div>
-      </details>
-    </div>
-    <div className="actions" hidden={!(["runtime", "models"] as SettingsSection[]).includes(activeSettingsSection)}><button className="primaryAction" onClick={save} disabled={loading}>{copy.saveSettings}</button><button onClick={checkRuntime}>{copy.testRuntime}</button></div>
-    {health && activeSettingsSection === "runtime" && <details className="technicalDisclosure"><summary>{language === "en" ? "Connection test details" : "Detail pengujian koneksi"}</summary><pre>{JSON.stringify(health, null, 2)}</pre></details>}
-  </section>;
-}
-
-function CaseLibrary({ onOpen, onDeleted, onCleared }: { onOpen: (id: string) => void; onDeleted: (id: string) => void; onCleared: () => void }) {
+export function CaseLibrary({ activeCase, analysis, onOpen, onDeleted, onCleared }: { activeCase: CaseRecord | null; analysis: AnalysisResult | null; onOpen: (id: string, imageId?: string) => Promise<void>; onDeleted: (id: string) => void; onCleared: () => void }) {
   const { language, copy } = useUiLanguage();
   const [q, setQ] = useState("");
   const [cases, setCases] = useState<CaseRecord[]>([]);
+  const [validationLabels, setValidationLabels] = useState<ValidationLabel[]>([]);
   const [error, setError] = useState("");
   const [visibleLimit, setVisibleLimit] = useState(15);
+  const [editingId, setEditingId] = useState("");
+  const [titleDraft, setTitleDraft] = useState("");
+  const validationWorkspaceRef = useRef<HTMLDetailsElement | null>(null);
 
   async function refresh() {
     setError("");
     try {
-      setCases(asList<CaseRecord>(await api.cases(q)));
+      const [nextCases, nextLabels] = await Promise.all([api.cases(q), api.validationLabels()]);
+      setCases(asList<CaseRecord>(nextCases));
+      setValidationLabels(asList<ValidationLabel>(nextLabels));
     } catch (exc) {
       setCases([]);
       setError(String(exc));
@@ -3662,7 +2991,7 @@ function CaseLibrary({ onOpen, onDeleted, onCleared }: { onOpen: (id: string) =>
   }
 
   async function removeCase(caseId: string, title: string) {
-    if (!window.confirm(`Hapus case "${title || caseId}" beserta gambar lokal dan export case?`)) return;
+    if (!window.confirm(language === "en" ? `Delete case "${title || caseId}" with its local images and case exports?` : `Hapus kasus "${title || caseId}" beserta gambar lokal dan ekspor kasus?`)) return;
     setError("");
     try {
       await api.deleteCase(caseId);
@@ -3674,8 +3003,9 @@ function CaseLibrary({ onOpen, onDeleted, onCleared }: { onOpen: (id: string) =>
   }
 
   async function clearDatabase() {
-    const confirmation = window.prompt("Ini menghapus SEMUA case lokal, gambar, label validasi, dan export case. Ketik HAPUS untuk lanjut:");
-    if (confirmation !== "HAPUS") return;
+    const expected = language === "en" ? "DELETE" : "HAPUS";
+    const confirmation = window.prompt(language === "en" ? `This deletes ALL local cases, images, validation labels, and case exports. Type ${expected} to continue:` : `Ini menghapus SEMUA kasus lokal, gambar, label validasi, dan ekspor kasus. Ketik ${expected} untuk lanjut:`);
+    if (confirmation !== expected) return;
     setError("");
     try {
       await api.clearCases();
@@ -3686,13 +3016,40 @@ function CaseLibrary({ onOpen, onDeleted, onCleared }: { onOpen: (id: string) =>
     }
   }
 
+  async function saveTitle(record: CaseRecord) {
+    const title = titleDraft.trim();
+    if (!title) return;
+    setError("");
+    try {
+      await api.saveCase({ ...record, title });
+      setEditingId("");
+      await refresh();
+    } catch (exc) { setError(String(exc)); }
+  }
+
   useEffect(() => { refresh(); setVisibleLimit(15); }, [q]);
   const visibleCases = cases.slice(0, visibleLimit);
+  const labelledCaseIds = new Set(validationLabels.map(label => label.case_id));
+  function openValidationWorkspace() {
+    if (!validationWorkspaceRef.current) return;
+    validationWorkspaceRef.current.open = true;
+    validationWorkspaceRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
   return <section className="panel libraryPage">
+    <div className="libraryOverview">
+      <div><h2>{language === "en" ? "Cases and validation" : "Kasus dan validasi"}</h2><p>{language === "en" ? "Search the registry, see validation state, and work with reference labels without switching pages." : "Cari registri, lihat status validasi, dan kerjakan label referensi tanpa berpindah halaman."}</p></div>
+      <button onClick={openValidationWorkspace}><ClipboardCheck size={16} />{activeCase ? (language === "en" ? `Validate ${activeCase.title}` : `Validasi ${activeCase.title}`) : (language === "en" ? "Open validation workspace" : "Buka workspace validasi")}</button>
+    </div>
+    <details className="validationWorkspace" ref={validationWorkspaceRef}>
+      <summary><ClipboardCheck size={18} /><span><b>{language === "en" ? "Validation workspace" : "Workspace validasi"}</b><small>{activeCase ? (language === "en" ? `Current context: ${activeCase.title}. Review AI output first, then save the human reference.` : `Konteks saat ini: ${activeCase.title}. Tinjau output AI, lalu simpan referensi manusia.`) : (language === "en" ? "Open a case in the Reading Room first to prefill its AI findings and annotations." : "Buka kasus di Ruang Baca terlebih dahulu agar temuan dan anotasi AI terisi otomatis.")}</small></span></summary>
+      <ValidationWorkbench activeCase={activeCase} analysis={analysis} onOpenCase={onOpen} />
+    </details>
+    <section className="caseRegistry" aria-label={language === "en" ? "Case registry" : "Registri kasus"}>
     <div className="libraryHeader">
       <div className="filters"><input value={q} onChange={e => setQ(e.target.value)} placeholder={copy.caseSearch} aria-label={copy.caseSearch} /><button onClick={refresh} aria-label={language === "en" ? "Refresh case search" : "Perbarui pencarian kasus"}><Search size={16} /></button></div>
       <details className="libraryManage"><summary>{language === "en" ? "Manage" : "Kelola"}</summary><button className="dangerAction" onClick={clearDatabase}><Trash2 size={16} />{language === "en" ? "Delete all local cases" : "Hapus semua kasus lokal"}</button></details>
     </div>
+    <div className="caseListViewport">
     {error && <div className="warn">{error}</div>}
     <p className="resultCount">{cases.length} {language === "en" ? "local cases" : "kasus lokal"}{q ? (language === "en" ? " found" : " ditemukan") : ""}</p>
     {visibleCases.length ? visibleCases.map((c, index) => {
@@ -3702,67 +3059,27 @@ function CaseLibrary({ onOpen, onDeleted, onCleared }: { onOpen: (id: string) =>
     const seriesCount = new Set(images.map(image => image.series_id).filter(Boolean)).size;
     const studyCount = new Set(images.map(image => image.study_id).filter(Boolean)).size;
     const title = String(c.title || caseId || "Untitled case");
-    return <div className="caseRow" key={caseId || index}><FolderOpen /><div><b>{title}</b><span>{updated}</span><small>{images.length || 0} image(s) · {studyCount || (images.length ? 1 : 0)} study · {seriesCount || (images.length ? 1 : 0)} series</small></div><div className="caseRowActions"><button className="primaryAction" onClick={() => onOpen(caseId)} disabled={!caseId}>{copy.open}</button><button className="dangerAction iconButton" onClick={() => removeCase(caseId, title)} disabled={!caseId} aria-label={`${language === "en" ? "Delete" : "Hapus"} ${title}`} title={language === "en" ? "Delete case" : "Hapus kasus"}><Trash2 size={15} /></button></div></div>;
+    const identifier = String(c.metadata?.LocalRecordID || c.metadata?.PatientID || c.metadata?.AccessionNumber || "");
+    return <div className={`caseRow ${activeCase?.case_id === caseId ? "activeCaseRow" : ""}`} key={caseId || index}><FolderOpen /><div>{editingId === caseId ? <input aria-label={language === "en" ? "Edit case title" : "Edit judul kasus"} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void saveTitle(c); if (event.key === "Escape") setEditingId(""); }} /> : <b>{title}</b>}<span>{identifier || caseId} · {updated}</span><small>{images.length || 0} image(s) · {studyCount || (images.length ? 1 : 0)} study · {seriesCount || (images.length ? 1 : 0)} series</small><small className={`caseValidationState ${labelledCaseIds.has(caseId) ? "labelled" : "unlabelled"}`}>{labelledCaseIds.has(caseId) ? (language === "en" ? "Reference label saved" : "Label referensi tersimpan") : (language === "en" ? "Not labelled for validation" : "Belum diberi label validasi")}</small></div><div className="caseRowActions">{editingId === caseId ? <><button onClick={() => saveTitle(c)} disabled={!titleDraft.trim()}><Save size={15} />{language === "en" ? "Save" : "Simpan"}</button><button onClick={() => setEditingId("")}>{language === "en" ? "Cancel" : "Batal"}</button></> : <button onClick={() => { setEditingId(caseId); setTitleDraft(title); }}><FileText size={15} />{language === "en" ? "Rename" : "Ubah nama"}</button>}<button className="primaryAction" onClick={() => onOpen(caseId)} disabled={!caseId}>{copy.open}</button><button className="dangerAction iconButton" onClick={() => removeCase(caseId, title)} disabled={!caseId} aria-label={`${language === "en" ? "Delete" : "Hapus"} ${title}`} title={language === "en" ? "Delete case" : "Hapus kasus"}><Trash2 size={15} /></button></div></div>;
   }) : <p>{copy.noCases}</p>}
     {visibleLimit < cases.length && <button className="loadMore" onClick={() => setVisibleLimit(limit => limit + 15)}>{language === "en" ? `Show 15 more (${cases.length - visibleLimit} remaining)` : `Tampilkan 15 lagi (${cases.length - visibleLimit} tersisa)`}</button>}
+    </div>
+    </section>
   </section>;
 }
 
 function About() {
   const { language, copy } = useUiLanguage();
-  const [catalog, setCatalog] = useState<ReferenceCatalog | null>(null);
-  useEffect(() => { api.references().then(setCatalog).catch(() => setCatalog(null)); }, []);
-  const sources = asList<ReferenceCatalog["sources"][number]>(catalog?.sources);
-  const inspirationPatterns = asList<NonNullable<ReferenceCatalog["inspiration_patterns"]>[number]>(catalog?.inspiration_patterns);
-  const maturityGaps = asList<ReferenceCatalog["maturity_gaps"][number]>(catalog?.maturity_gaps);
-  const nextBuilds = textList(catalog?.recommended_next_builds);
-
   return <section className="panel about">
-    <h2>{language === "en" ? "Credits & Safety" : "Kredit & Keamanan"}</h2>
+    <h2>{language === "en" ? "About MedRay v2" : "Tentang MedRay v2"}</h2>
     <p>{language === "en" ? "MedRay v2 is inspired by MedRay Workspace, MedRAX, and Odysseus. It is local-first and does not upload data to the cloud by default." : "MedRay v2 terinspirasi oleh MedRay Workspace, MedRAX, dan Odysseus. Aplikasi ini local-first dan tidak mengunggah data ke cloud secara default."}</p>
     <p><b>Disclaimer:</b> {copy.disclaimer}</p>
-
-    <details className="referenceDisclosure">
-      <summary><BookOpen size={18} /><span><b>{language === "en" ? "Research references and maturity map" : "Referensi riset dan peta maturitas"}</b><small>{catalog ? `${sources.length} ${language === "en" ? "sources" : "sumber"}` : (language === "en" ? "Not available" : "Belum tersedia")}</small></span></summary>
-      <div className="referenceDisclosureBody">
-      <p>{catalog?.scope || (language === "en" ? "Backend reference catalog is not available yet." : "Backend reference catalog belum tersedia.")}</p>
-    {catalog && <div className="referenceGrid">
-      {sources.map(source => safeExternalUrl(source.url) ? <a className="referenceCard" key={source.url} href={safeExternalUrl(source.url)} target="_blank" rel="noreferrer">
-        <span>{source.kind}</span>
-        <b>{source.name}</b>
-        <p>{source.why_it_matters}</p>
-        <small>{source.medray_action}</small>
-      </a> : <div className="referenceCard" key={source.name}><span>{source.kind}</span><b>{source.name}</b><p>{source.why_it_matters}</p><small>{source.medray_action}</small></div>)}
-    </div>}
-
-    {catalog && <div className="maturityList">
-      <h3>{language === "en" ? "Inspiration patterns" : "Pola inspirasi"}</h3>
-      {inspirationPatterns.map(pattern => <div key={pattern.pattern}>
-        <b>{pattern.pattern}</b>
-        <p>{pattern.medray_takeaway}</p>
-        <small>{textList(pattern.inspired_by).join(" + ")}</small>
-      </div>)}
-    </div>}
-
-    {catalog && <div className="maturityList">
-      <h3>{language === "en" ? "Maturity gaps" : "Gap maturitas"}</h3>
-      {maturityGaps.map(gap => <div key={gap.area}>
-        <b>{gap.area}</b>
-        <p>{gap.current}</p>
-        <small>{gap.next}</small>
-      </div>)}
-    </div>}
-
-    {catalog && <div className="maturityList">
-      <h3>{language === "en" ? "Recommended next builds" : "Build berikutnya yang direkomendasikan"}</h3>
-      {nextBuilds.map((item, index) => <div key={item}>
-        <b>{index + 1}. {item.split(":")[0]}</b>
-        <p>{item.includes(":") ? item.slice(item.indexOf(":") + 1).trim() : item}</p>
-      </div>)}
-    </div>}
-      </div>
-    </details>
+    <div className="aboutFacts"><div><b>{language === "en" ? "Storage" : "Penyimpanan"}</b><span>{language === "en" ? "Local filesystem and SQLite" : "Filesystem lokal dan SQLite"}</span></div><div><b>{language === "en" ? "Intended use" : "Tujuan penggunaan"}</b><span>{language === "en" ? "Research, education, and prototyping" : "Riset, edukasi, dan prototipe"}</span></div><div><b>{language === "en" ? "Clinical status" : "Status klinis"}</b><span>{language === "en" ? "Not a medical device" : "Bukan alat kesehatan"}</span></div></div>
   </section>;
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const rootElement = document.getElementById("root");
+
+if (rootElement) {
+  createRoot(rootElement).render(<App />);
+}

@@ -7,12 +7,14 @@ import os
 import platform
 import re
 import socket
+import shutil
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,10 +54,12 @@ MODEL_FILE_HINTS = {
 MAX_MANUAL_DOWNLOAD_BYTES = 16 * 1024 * 1024 * 1024
 
 
-def _validate_manual_download_url(url: str) -> None:
+def _validate_manual_download_url(url: str, *, redirect: bool = False) -> None:
     parsed = urllib.parse.urlparse(str(url or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Manual model downloads require an HTTP(S) URL with a hostname.")
+    if parsed.username or parsed.password or (parsed.query and not redirect):
+        raise ValueError("Use a public artifact URL without embedded credentials or query tokens; sign in separately.")
     host = parsed.hostname.rstrip(".").lower()
     try:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -70,8 +74,14 @@ def _validate_manual_download_url(url: str) -> None:
 
 class _SafeDownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        _validate_manual_download_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        _validate_manual_download_url(newurl, redirect=True)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            redirected.remove_header("Authorization")
+            # Recompute credentials for the destination, never forward a source token.
+            for key, value in request_headers(newurl).items():
+                redirected.add_header(key, value)
+        return redirected
 REQUIRED_LOCAL_CARD_FIELDS = [
     "intended_use",
     "task",
@@ -664,7 +674,8 @@ def _safe_local_model_path(path: str) -> Path:
 def _local_artifact_id(path: Path) -> str:
     models_dir = get_settings().models_dir.resolve()
     rel = path.resolve().relative_to(models_dir).as_posix()
-    digest = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:12]
+    # This digest is a stable local identifier, not a security primitive.
+    digest = hashlib.sha1(rel.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"local:{digest}"
 
 
@@ -966,7 +977,8 @@ def save_huggingface_token(token: str) -> dict[str, Any]:
         raise ValueError("Hugging Face token is empty.")
     path = _huggingface_token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"token": cleaned, "updated_at": now_iso()}), encoding="utf-8")
+    from app.runtime.secrets import private_json
+    private_json(path, {"token": cleaned, "updated_at": now_iso()})
     return huggingface_login_status()
 
 
@@ -993,7 +1005,8 @@ def save_github_token(token: str) -> dict[str, Any]:
         raise ValueError("GitHub token is empty.")
     path = _github_token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"token": cleaned, "updated_at": now_iso()}), encoding="utf-8")
+    from app.runtime.secrets import private_json
+    private_json(path, {"token": cleaned, "updated_at": now_iso()})
     return github_login_status()
 
 
@@ -1024,7 +1037,7 @@ def request_headers(url: str = "") -> dict[str, str]:
 
 def _get_json(url: str, timeout: int = 20) -> Any:
     req = urllib.request.Request(url, headers=request_headers(url))
-    with urllib.request.urlopen(req, timeout=timeout) as res:
+    with urllib.request.build_opener(_SafeDownloadRedirectHandler()).open(req, timeout=timeout) as res:
         return json.loads(res.read().decode("utf-8"))
 
 
@@ -1114,7 +1127,7 @@ def _hf_readme(repo_id: str) -> str:
     readme_url = f"https://huggingface.co/{repo_id}/raw/main/README.md"
     try:
         req = urllib.request.Request(readme_url, headers=request_headers(readme_url))
-        with urllib.request.urlopen(req, timeout=12) as res:
+        with urllib.request.build_opener(_SafeDownloadRedirectHandler()).open(req, timeout=12) as res:
             return res.read(80_000).decode("utf-8", errors="replace")
     except Exception:
         return ""
@@ -1404,9 +1417,22 @@ class DownloadManager:
         self.pause_flags: set[str] = set()
         self.workers: dict[str, threading.Thread] = {}
         self.reserved_targets: set[str] = set()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
-    def start(self, url: str, filename: str | None = None) -> dict[str, Any]:
+    def start(self, url: str, filename: str | None = None, connections: int = 1, checksum_sha256: str = "") -> dict[str, Any]:
+        if isinstance(connections, bool) or not isinstance(connections, int) or not 1 <= connections <= 16:
+            raise ValueError("Download connections must be between 1 and 16.")
+        checksum_sha256 = str(checksum_sha256 or "").strip().lower()
+        if checksum_sha256 and not re.fullmatch(r"[0-9a-f]{64}", checksum_sha256):
+            raise ValueError("SHA-256 checksum must contain exactly 64 hexadecimal characters.")
+        with self.lock:
+            root = get_settings().models_dir.resolve()
+            for job in self.jobs.values():
+                if job.get("url") == url and Path(job["target_path"]).parent == root and job.get("status") in {"queued", "downloading", "paused", "pausing"}:
+                    return job
+            return self._start_locked(url, filename, connections, checksum_sha256)
+
+    def _start_locked(self, url: str, filename: str | None = None, connections: int = 1, checksum_sha256: str = "") -> dict[str, Any]:
         _validate_manual_download_url(url)
         job_id = str(uuid4())
         target = self._target_path(url, filename, job_id)
@@ -1428,6 +1454,11 @@ class DownloadManager:
             "eta": "",
             "accept_ranges": False,
             "resumable": False,
+            "transfer_mode": "single",
+            "connections_requested": connections,
+            "connections_used": 1,
+            "checksum_sha256": checksum_sha256,
+            "checksum_status": "pending" if checksum_sha256 else "not_requested",
             "retryable": False,
             "error": "",
             "created_at": created_at,
@@ -1475,6 +1506,115 @@ class DownloadManager:
         job["eta"] = f"{max((total - read) / speed, 0):.0f}s" if total and speed else "unknown"
         job["updated_at"] = now_iso()
 
+    def _range_capability(self, job: dict[str, Any]) -> int | None:
+        headers = request_headers(job["url"])
+        headers["Range"] = "bytes=0-0"
+        req = urllib.request.Request(job["url"], headers=headers)
+        with urllib.request.build_opener(_SafeDownloadRedirectHandler()).open(req, timeout=30) as response:
+            if response.status != 206:
+                return None
+            match = re.fullmatch(r"bytes 0-0/(\d+)", response.headers.get("Content-Range") or "")
+            if not match:
+                return None
+            response.read(1)
+            total = int(match[1])
+            return total if 0 < total <= MAX_MANUAL_DOWNLOAD_BYTES else None
+
+    def _verify_checksum(self, job: dict[str, Any], path: Path) -> None:
+        expected = str(job.get("checksum_sha256") or "")
+        if not expected:
+            job["checksum_status"] = "not_requested"
+            return
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected:
+            job["checksum_status"] = "mismatch"
+            raise ValueError("Downloaded file failed SHA-256 verification and was not promoted.")
+        job["checksum_status"] = "verified"
+
+    def _run_segmented(self, job: dict[str, Any], target: Path, partial: Path) -> bool:
+        requested = int(job.get("connections_requested") or 1)
+        if requested <= 1:
+            return False
+        total = int(job.get("total_bytes") or 0) or self._range_capability(job)
+        if not total:
+            return False
+        connection_count = min(requested, max(1, total // (256 * 1024)))
+        if connection_count <= 1:
+            return False
+        if shutil.disk_usage(target.parent).free < total + 64 * 1024 * 1024:
+            raise ValueError("Not enough disk space. Free space on the model drive, then retry.")
+        job.update({"total_bytes": total, "accept_ranges": True, "resumable": True, "transfer_mode": "segmented", "connections_used": connection_count})
+        started = time.time()
+        segments: list[tuple[int, int, Path]] = []
+        base_size, remainder = divmod(total, connection_count)
+        cursor = 0
+        for index in range(connection_count):
+            size = base_size + (1 if index < remainder else 0)
+            end = cursor + size - 1
+            segments.append((cursor, end, partial.with_name(partial.name + f".segment-{index}")))
+            cursor = end + 1
+        completed = sum(min(path.stat().st_size, end - start + 1) for start, end, path in segments if path.exists())
+        self._format_progress(job, completed, total, started)
+
+        def fetch(segment: tuple[int, int, Path]) -> None:
+            nonlocal completed
+            start, end, segment_path = segment
+            existing = segment_path.stat().st_size if segment_path.exists() else 0
+            if existing > end - start + 1:
+                segment_path.unlink()
+                existing = 0
+            range_start = start + existing
+            if range_start > end:
+                return
+            headers = request_headers(job["url"])
+            headers["Range"] = f"bytes={range_start}-{end}"
+            request = urllib.request.Request(job["url"], headers=headers)
+            with urllib.request.build_opener(_SafeDownloadRedirectHandler()).open(request, timeout=30) as response:
+                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range") or "")
+                if response.status != 206 or not match or int(match[1]) != range_start or int(match[2]) != end or int(match[3]) != total:
+                    raise ValueError("Server returned an invalid segmented range response.")
+                with segment_path.open("ab" if existing else "wb") as handle:
+                    while True:
+                        if job["id"] in self.cancel_flags:
+                            raise InterruptedError("cancelled")
+                        if job["id"] in self.pause_flags:
+                            raise InterruptedError("paused")
+                        chunk = response.read(256 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        with self.lock:
+                            completed += len(chunk)
+                            self._format_progress(job, completed, total, started)
+            if segment_path.stat().st_size != end - start + 1:
+                raise ValueError("A segmented response ended before its byte range was complete.")
+
+        try:
+            with ThreadPoolExecutor(max_workers=connection_count, thread_name_prefix="medray-download") as executor:
+                list(executor.map(fetch, segments))
+        except InterruptedError as exc:
+            job["status"] = str(exc)
+            job["retryable"] = str(exc) == "paused"
+            return True
+        except Exception:
+            for path in partial.parent.glob(partial.name + ".segment-*"):
+                path.unlink(missing_ok=True)
+            raise
+        with partial.open("wb") as destination:
+            for _start, _end, segment_path in segments:
+                with segment_path.open("rb") as source:
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
+                segment_path.unlink(missing_ok=True)
+        if partial.stat().st_size != total:
+            raise ValueError("Segment assembly produced an incomplete file.")
+        self._verify_checksum(job, partial)
+        partial.replace(target)
+        job.update({"status": "completed", "percent": 100, "bytes_read": total, "completed_at": now_iso(), "retryable": False})
+        return True
+
     def _run(self, job_id: str) -> None:
         job = self.jobs[job_id]
         target = Path(job["target_path"])
@@ -1484,6 +1624,8 @@ class DownloadManager:
             job["retryable"] = False
             job["error"] = ""
             self._persist(job)
+            if self._run_segmented(job, target, partial):
+                return
             resume_offset = partial.stat().st_size if partial.exists() else 0
             headers = request_headers(job["url"])
             if resume_offset:
@@ -1493,11 +1635,20 @@ class DownloadManager:
             with opener.open(req, timeout=30) as res:
                 range_supported = "bytes" in (res.headers.get("Accept-Ranges") or "").lower() or res.status == 206
                 content_length = int(res.headers.get("Content-Length") or 0)
-                if resume_offset and not range_supported:
+                if resume_offset and res.status != 206:
                     resume_offset = 0
+                if res.status == 206:
+                    content_range = res.headers.get("Content-Range") or ""
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+                    if not match or int(match[1]) != resume_offset or int(match[2]) < resume_offset:
+                        raise ValueError("Download resume response is invalid. Retry from the beginning.")
+                    if content_length and int(match[2]) - resume_offset + 1 != content_length:
+                        raise ValueError("Download range length does not match the response.")
                 total = (resume_offset + content_length) if content_length else None
                 if total and total > MAX_MANUAL_DOWNLOAD_BYTES:
                     raise ValueError(f"Manual model download exceeds the {MAX_MANUAL_DOWNLOAD_BYTES} byte safety limit.")
+                if total and shutil.disk_usage(target.parent).free < total - resume_offset + 64 * 1024 * 1024:
+                    raise ValueError("Not enough disk space. Free space on the model drive, then retry.")
                 read = resume_offset
                 job["_resume_offset"] = resume_offset
                 job["accept_ranges"] = range_supported
@@ -1523,6 +1674,11 @@ class DownloadManager:
                         f.write(chunk)
                         read += len(chunk)
                         self._format_progress(job, read, total, started)
+                if total is not None and read != total:
+                    raise ValueError("Download interrupted before all bytes arrived. Resume or retry.")
+                if res.status == 206 and read != int(match[3]):
+                    raise ValueError("Download range is incomplete. Resume to finish the remaining bytes.")
+                self._verify_checksum(job, partial)
                 partial.replace(target)
             job["status"] = "completed"
             job["percent"] = 100
@@ -1530,7 +1686,8 @@ class DownloadManager:
             job["retryable"] = False
         except Exception as exc:
             job["status"] = "failed"
-            job["error"] = str(exc)
+            from app.runtime.secrets import safe_error
+            job["error"] = safe_error(exc)
             job["retryable"] = True
         finally:
             job.pop("_resume_offset", None)
@@ -1545,6 +1702,13 @@ class DownloadManager:
     def list(self) -> list[dict[str, Any]]:
         merged = {item["id"]: item for item in list_json("downloads")}
         merged.update(self.jobs)
+        for job in merged.values():
+            worker = self.workers.get(job["id"])
+            if job.get("status") in {"queued", "downloading", "pausing", "cancelling"} and not (worker and worker.is_alive()):
+                job["status"] = "paused"
+                job["retryable"] = True
+                job["error"] = "Download interrupted. Resume to continue, or retry from the beginning."
+                self._persist(job)
         return sorted(merged.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -1595,6 +1759,11 @@ class DownloadManager:
     def retry(self, job_id: str) -> dict[str, Any]:
         job = self._get_job(job_id)
         if job["status"] in {"failed", "cancelled", "paused"}:
+            worker = self.workers.get(job_id)
+            if worker and worker.is_alive():
+                worker.join(timeout=2)
+                if worker.is_alive():
+                    return job
             self._cleanup_partial(job)
             job["bytes_read"] = 0
             job["percent"] = 0
@@ -1641,6 +1810,10 @@ class DownloadManager:
             resolved = partial.resolve()
             if (models_dir in resolved.parents or resolved == models_dir) and resolved.exists():
                 resolved.unlink()
+            for segment in resolved.parent.glob(resolved.name + ".segment-*"):
+                segment_resolved = segment.resolve()
+                if models_dir in segment_resolved.parents and segment_resolved.is_file():
+                    segment_resolved.unlink()
         except Exception as exc:
             job["error"] = f"{job.get('error', '')} Cleanup failed: {exc}".strip()
 

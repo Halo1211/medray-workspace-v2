@@ -80,10 +80,14 @@ def upsert_json(table: str, key: str, payload: dict[str, Any], key_column: str =
 
 
 def list_json(table: str) -> list[dict[str, Any]]:
-    if table not in {"model_catalog", "downloads"}:
+    queries = {
+        "model_catalog": "SELECT payload FROM model_catalog",
+        "downloads": "SELECT payload FROM downloads",
+    }
+    if table not in queries:
         raise ValueError("Unsupported table")
     with connect() as conn:
-        rows = conn.execute(f"SELECT payload FROM {table}").fetchall()
+        rows = conn.execute(queries[table]).fetchall()
     return [payload for row in rows if (payload := _decode_mapping(row["payload"])) is not None]
 
 

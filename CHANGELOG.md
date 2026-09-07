@@ -8,6 +8,12 @@ The project is currently an alpha research prototype and does not yet follow a f
 
 ### Added
 
+- Advanced Reading Room annotations: ellipse ROI, calibrated length, DICOM frame identity, bounded undo/redo, lock-aware editing, and reviewed export support.
+- DICOM multi-frame rendering with VOI/window-level presets, manual center/width, inversion, rotation/flip controls, and Pixel Spacing exposure.
+- Adaptive segmented model downloads with range validation, pause/resume segment recovery, connection tuning, and optional SHA-256 verification.
+- Advanced AI preferences for generation temperature, output budget, request timeout, retries, annotation suggestion threshold, and download concurrency.
+- Unified Case Library and Validation workspace with inline case rename.
+
 - Local-first X-ray review workspace with React/Vite frontend and FastAPI backend.
 - PNG, JPEG, and DICOM ingestion with multi-image case support.
 - Anatomy routing for chest, MSK/trauma, abdomen/KUB, spine, skull/facial/sinus, and general X-ray profiles.

@@ -32,7 +32,7 @@ MAX_POLYGON_VERTICES = 4096
 
 
 class Coordinate(BaseModel):
-    type: Literal["bbox", "point", "polygon", "mask", "grounding_box"] = "bbox"
+    type: Literal["bbox", "point", "polygon", "ellipse", "length", "angle", "mask", "grounding_box"] = "bbox"
     x: float = 0
     y: float = 0
     width: float = 0
@@ -51,6 +51,14 @@ class Coordinate(BaseModel):
             area = abs(sum(self.points[index][0] * self.points[(index + 1) % len(self.points)][1] - self.points[(index + 1) % len(self.points)][0] * self.points[index][1] for index in range(len(self.points))) / 2)
             if area <= 0:
                 raise ValueError("Polygon coordinates require non-zero area.")
+        if self.type == "ellipse" and not (
+            math.isfinite(self.x) and math.isfinite(self.y) and math.isfinite(self.width) and math.isfinite(self.height)
+            and self.width > 0 and self.height > 0
+        ):
+            raise ValueError("Ellipse coordinates require a finite, positive bounding box.")
+        expected_points = 2 if self.type == "length" else 3 if self.type == "angle" else 0
+        if expected_points and (len(self.points) != expected_points or not all(math.isfinite(x) and math.isfinite(y) for x, y in self.points)):
+            raise ValueError(f"{self.type.title()} coordinates require exactly {expected_points} finite points.")
         return self
 
 
@@ -105,6 +113,7 @@ class Annotation(BaseModel):
     original_state: AnnotationOriginalState | None = None
     source_image_id: str = "primary"
     source_image_index: int = Field(default=0, ge=0)
+    source_frame_number: int = Field(default=0, ge=0)
     source_view: str = ""
     source_series_id: str = ""
     revision_history: list[AnnotationRevision] = Field(default_factory=list)
@@ -311,6 +320,14 @@ class ModelMetadata(BaseModel):
     safety_notes: list[str] = []
 
 
+class RuntimeTaskConnection(BaseModel):
+    backend: RuntimeBackend
+    base_url: str = Field(min_length=1, max_length=2048)
+    model: str = Field(min_length=1, max_length=300)
+    allow_cloud: bool = False
+    provider: str = Field(default="", max_length=80)
+
+
 class RuntimeConfig(BaseModel):
     primary_backend: RuntimeBackend = RuntimeBackend.DEMO
     chat_model: str = "demo-safe-radiology-assistant"
@@ -318,7 +335,16 @@ class RuntimeConfig(BaseModel):
     classification_model: str = "demo-classifier"
     segmentation_model: str = "disabled"
     grounding_model: str = "disabled"
+    review_depth: Literal["focused", "balanced", "thorough"] = "balanced"
     localization_confidence_threshold: float = Field(default=0.25, ge=0.05, le=0.95)
+    annotation_auto_accept_threshold: float = Field(default=0.9, ge=0.5, le=0.99)
+    temperature: float = Field(default=0.2, ge=0, le=2)
+    top_p: float = Field(default=0.95, ge=0.05, le=1)
+    seed: int = Field(default=-1, ge=-1, le=2147483647)
+    max_output_tokens: int = Field(default=2048, ge=128, le=32768)
+    request_timeout_seconds: int = Field(default=180, ge=10, le=900)
+    max_retries: int = Field(default=1, ge=0, le=5)
+    download_connections: int = Field(default=4, ge=1, le=16)
     chest_xray_model: str = "inherit"
     msk_xray_model: str = "inherit"
     abdomen_xray_model: str = "inherit"
@@ -329,4 +355,5 @@ class RuntimeConfig(BaseModel):
     openai_base_url: str = "http://127.0.0.1:8000/v1"
     ollama_base_url: str = "http://127.0.0.1:11434"
     allow_cloud: bool = False
+    task_connections: dict[Literal["vision", "chat", "report"], RuntimeTaskConnection] = Field(default_factory=dict)
     cpu_only: bool = True

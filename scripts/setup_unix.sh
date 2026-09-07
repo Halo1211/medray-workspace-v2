@@ -15,9 +15,10 @@ if [ "${MEDRAY_INSTALL_OPTIONAL:-0}" = "1" ]; then
   python -m pip install -r backend/requirements-optional.txt
 fi
 node --version
+node -e "const [a,b]=process.versions.node.split('.').map(Number); if (!((a===22 && b>=12)||a>=24)) { console.error('Install Node 22.12+ or 24 LTS.'); process.exit(1); }"
 npm --version
 export npm_config_cache="$ROOT/data/cache/npm"
 mkdir -p "$npm_config_cache"
-(cd frontend && npm install)
+(cd frontend && npm ci)
 command -v ollama >/dev/null && echo "Ollama found." || echo "Ollama is not installed; the built-in mode remains available."
 echo "Setup complete. Run ./start_medray_v2.sh"

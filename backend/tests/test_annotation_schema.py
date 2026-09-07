@@ -27,3 +27,14 @@ def test_point_and_polygon_coordinate_contracts():
     assert len(polygon.points) == 3
     with pytest.raises(ValidationError):
         Coordinate(type="polygon", points=[(1, 1), (2, 2), (3, 3)])
+
+
+def test_measurement_coordinate_contracts():
+    length = Coordinate(type="length", points=[(1, 2), (4, 6)])
+    ellipse = Coordinate(type="ellipse", x=10, y=20, width=30, height=40)
+    assert length.points == [(1, 2), (4, 6)]
+    assert ellipse.width == 30
+    with pytest.raises(ValidationError):
+        Coordinate(type="length", points=[(1, 2)])
+    with pytest.raises(ValidationError):
+        Coordinate(type="ellipse", x=1, y=1, width=0, height=2)

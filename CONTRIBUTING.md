@@ -27,4 +27,4 @@ Keep each pull request focused. Explain the user problem, the chosen approach, s
 
 ## Licensing
 
-The project does not yet include an open-source license. Discuss substantial contributions with the repository owner until a contribution and project license has been selected.
+MedRay v2 is distributed under the MIT License. By contributing, you agree that your contribution may be distributed under the same terms. See [LICENSE](LICENSE).

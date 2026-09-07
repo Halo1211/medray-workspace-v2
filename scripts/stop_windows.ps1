@@ -1,41 +1,17 @@
-param(
-    [int[]]$BackendPorts = @(8765..8815),
-    [int[]]$FrontendPorts = @(5173..5193)
-)
-
-$ErrorActionPreference = "Continue"
-$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$ports = @($BackendPorts + $FrontendPorts | Sort-Object -Unique)
-$connections = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-    Where-Object { $ports -contains $_.LocalPort }
-
-if (-not $connections) {
-    Write-Host "No MedRay process is listening on the default port ranges."
-    exit 0
+$ErrorActionPreference = "Stop"
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+$Cache = Join-Path $ProjectRoot "data\cache"
+$State = Join-Path $Cache "launcher.json"
+if (!(Test-Path -LiteralPath $State)) {
+  Write-Host "No MedRay launcher session was found."
+  exit 0
 }
-
-$pids = $connections | Select-Object -ExpandProperty OwningProcess -Unique
-foreach ($pidValue in $pids) {
-    $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
-    if (-not $process) {
-        continue
-    }
-    $path = [string]($process.Path)
-    $commandLine = ""
-    try {
-        $commandLine = [string](Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue").CommandLine
-    } catch {
-        $commandLine = ""
-    }
-    $looksLikeMedRay =
-        $commandLine.Contains($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $commandLine -like "*uvicorn app.main:app*" -or
-        $commandLine -like "*vite*--host*127.0.0.1*"
-
-    if ($looksLikeMedRay) {
-        Write-Host "Stopping PID $pidValue ($($process.ProcessName))"
-        & taskkill.exe /PID $pidValue /T /F | Out-Null
-    } else {
-        Write-Host "Skipping PID $pidValue ($($process.ProcessName)); it does not look like a MedRay process. Path=$path"
-    }
+try {
+  $Session = Get-Content -LiteralPath $State -Raw | ConvertFrom-Json
+  if ($Session.nonce -notmatch '^[a-f0-9]{32}$') { throw "No current launcher session was found. Close its window or press Ctrl+C." }
+  @{ nonce = $Session.nonce } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Cache "launcher-stop.json") -Encoding ASCII
+  Write-Host "Stop requested. MedRay will close its own services and release their ports."
+} catch {
+  Write-Host "Could not stop MedRay: $($_.Exception.Message)"
+  exit 1
 }

@@ -23,22 +23,26 @@ MedRay v2 is a local application for reviewing plain radiographs and experimenti
 
 The default **Built-in Demo** works without downloading a clinical model. Optional local runtimes can be connected when you want to test a model on your own machine. Data is stored locally by default; cloud access is disabled unless explicitly configured and permitted by the runtime safety checks.
 
-The interface starts in English for new users. Indonesian is also available from the language control and is remembered locally in the browser.
+The interface starts in English for new users and Indonesian is available throughout the workspace, including the guided AI Setup and annotation-review flows.
+
+## Screenshot
+
+![MedRay v2 dashboard](docs/screenshots/medray-dashboard.png)
 
 ## What is implemented
 
 | Area | Current capability |
 | --- | --- |
-| Reading Room | Import PNG, JPEG, and DICOM studies; zoom, brightness, contrast, metadata, multi-image navigation, and overlays |
+| Reading Room | Import PNG, JPEG, and multi-frame DICOM studies; calibrated window/level presets, frame navigation, inversion, rotation/flips, zoom, metadata, and overlays |
 | Anatomy routing | Chest, MSK/trauma, abdomen/KUB, spine, skull/facial/sinus, and general/unknown profiles; DICOM metadata, study description, filename, and reviewer override are supported inputs |
 | Structured review | Image-quality estimate, anatomy-specific checklists, laterality/view warnings, findings, differentials, result cards, provenance, and human-review state |
-| Annotations | Manual and model-originated annotations with editable geometry, source-image links, finding links, revision history, and reviewed PNG/JSON packages |
+| Annotations | Bounding boxes, points, polygons, ellipse ROIs, and calibrated lengths; frame-aware provenance, lock/show controls, undo/redo, editable geometry, links, revision history, and reviewed PNG/JSON packages |
 | Reporting | English or Indonesian draft reports with Markdown, PDF, JSON, annotated PNG, and audit-bundle export |
-| Case Library | Local SQLite-backed case storage, multiple images per study, search, configurable database folder, and explicit deletion controls |
+| Case Library | Local SQLite-backed case storage, title editing, multiple images per study, search, configurable database folder, explicit deletion controls, and an integrated Validation tab |
 | DICOM safety | Local tag inspection, private/burned-in risk warnings, prototype de-identification, readback verification, and de-identified metadata/DICOM export |
-| Model Finder | Search and inspect Hugging Face, GitHub, and installed Ollama models; import local artifacts; queue direct downloads; save local model cards |
-| Validation Workbench | Curated fixtures, reviewer labels, dataset/protocol metadata, agreement metrics, missed-reference review, and validation-report export |
-| Runtime connections | Built-in deterministic demo, Ollama, and OpenAI-compatible chat endpoints; optional local vision adapters |
+| Model Finder | Search and inspect Hugging Face, GitHub, and installed Ollama models; resumable segmented downloads with adaptive connection count and optional SHA-256 verification; local imports and model cards |
+| Validation Workbench | Integrated into Case Library with curated fixtures, reviewer labels, dataset/protocol metadata, agreement metrics, missed-reference review, and validation-report export |
+| Runtime connections | Independent vision, chat, and report assignments across Ollama, LM Studio, Jan, llama.cpp, vLLM, LocalAI, TGI, LiteLLM, OpenAI, OpenRouter, Groq, Together AI, and custom compatible endpoints |
 
 ## Typical workflow
 
@@ -79,48 +83,32 @@ flowchart TB
 | --- | --- | --- |
 | Built-in Demo | Explore the complete UI and deterministic review flow | Available by default; not a clinical AI model |
 | Ollama | Local chat, image review with a VLM, and selected report drafting paths | Available when Ollama and a compatible model are installed; outputs are unvalidated candidate observations |
-| OpenAI-compatible API | Chat through a configured compatible endpoint | Optional; endpoint use is subject to local/cloud safety settings |
-| TorchXRayVision DenseNet-121 | Optional multi-label CXR classification | Adapter is wired; install optional dependencies and treat probabilities as research-only |
-| Reviewed local Ultralytics detector | Optional MSK fracture bounding-box localization | Requires an imported local artifact, a completed model card, and box-level local validation |
+| OpenAI-compatible APIs | Image review with compatible VLMs, chat, and English or Indonesian report drafting | Independent per-task testing, endpoint-scoped keys, HTTPS for remote providers, and explicit cloud opt-in |
+| TorchXRayVision classifier recipes | All-dataset, NIH, CheXpert, and RSNA chest X-ray classifiers | Guided CPU setup, SHA-256-verified official weights, synthetic model-load test, and explicit activation; research-only |
 | MedRAX-inspired tool interface | Composable tool contracts and provenance-oriented orchestration boundary | The repository does not bundle the external MedRAX model stack or weights |
 | LocateAnything parser | Parse bounded box/point/`none` outputs into MedRay annotation objects | Research parser only; model download, remote-code execution, and automatic inference are intentionally not enabled |
+
+## AI Setup
+
+Start with **AI Setup** and follow the numbered flow: **1 Choose a goal → 2 Connect or find → 3 Technical test → 4 Use model**. Vision, chat, and report drafting can each use a different tested provider. **X-ray Classifiers** provides a separate guided path for specialist pathology classifiers. Optional discovery, download, and preference controls stay under **Show advanced tools**.
+
+Read the [AI Setup and provider guide](docs/AI_SETUP.md) and [verification/limitations](docs/AI_SETUP_VERIFICATION.md).
 
 ## Quick start
 
 ### Requirements
 
 - Python 3.10 or newer (Python 3.12 is tested in this workspace).
-- Node.js 20 LTS or 22 LTS. Node.js 21 is not an LTS target for the frontend toolchain.
+- Node.js 22.12+ or 24 LTS. Node.js 20/21 are not supported by this setup.
 - npm.
 - Windows 10/11, Linux, or macOS.
-- Optional: Ollama for local chat/VLM workflows; a suitable PyTorch installation for optional vision adapters.
+- Optional: any supported local or hosted compatible provider; a suitable PyTorch installation for embedded classifiers.
 
 ### Windows
 
-From the repository root:
+Double-click **setup_medray_v2.bat**, then **start_medray_v2.bat**. The launcher installs core components when needed, waits for backend and frontend readiness, opens the browser and shows status. Choose **AI Setup** in the app. Python and Node must already be installed; missing prerequisites get guided error messages.
 
-```powershell
-.\start_medray_v2.bat
-```
-
-The launcher creates `.env` and `.venv` when needed, installs core dependencies, starts the FastAPI backend and Vite frontend, and prints the local URLs. Open the displayed frontend URL, normally:
-
-```text
-http://127.0.0.1:5173
-```
-
-The backend API and interactive OpenAPI documentation are normally available at:
-
-```text
-http://127.0.0.1:8765/api/health
-http://127.0.0.1:8765/docs
-```
-
-Close the launcher with `Ctrl+C`. If an older process still owns a port, run:
-
-```powershell
-.\stop_medray_v2.bat
-```
+Default frontend: `http://127.0.0.1:5173`. Backend health: `http://127.0.0.1:8765/api/health`. Busy ports are handled by selecting available local ports. Starting twice reuses the running instance. Stop with Ctrl+C or **stop_medray_v2.bat**; the supervisor stops only its own services.
 
 ### Linux or macOS
 
@@ -129,11 +117,11 @@ chmod +x start_medray_v2.sh
 ./start_medray_v2.sh
 ```
 
-Then open `http://127.0.0.1:5173` in a browser. Stop the processes with `Ctrl+C`.
+The browser opens when both services are ready. Stop with `Ctrl+C`.
 
 ## Optional model dependencies
 
-The core application does not require PyTorch, Transformers, or model weights. Install the optional stack only when you are testing the corresponding adapters:
+The core app needs no AI weights. Use **AI Setup → X-ray Classifiers** for reviewed specialist classifier recipes and **Local AI** for general models served by external applications. GPU and unsupported environments use official guided setup. The following broad optional-stack commands are for advanced development and do not add generic Hugging Face inference support:
 
 ```powershell
 .\scripts\setup_windows.ps1 -WithOptional
@@ -149,7 +137,7 @@ For local Ollama chat, install and start Ollama separately, then pull a model av
 ollama pull qwen2.5:3b
 ```
 
-For local image review, use a compatible vision model and select it in **Runtime Settings**. Model names and hardware requirements vary by Ollama version and model package; the example is not a clinical recommendation.
+For local image review, use **AI Setup → Local AI**, select a detected vision model, test it, then click **Use model**. Model names and hardware requirements vary by Ollama version and model package; the example is not a clinical recommendation.
 
 ## Manual development setup
 
@@ -228,8 +216,8 @@ npm run build
 
 The current verified baseline in this workspace is:
 
-- Backend: **141 passed, 1 skipped**.
-- Frontend: **14 passed**.
+- Backend: **238 passed, 1 skipped**.
+- Frontend: **42 passed**.
 - Production frontend build: **passed**.
 
 External model availability, Ollama behavior, hardware performance, and clinical validity are not established by these tests.
@@ -255,7 +243,7 @@ backend/tests/           Backend unit and API tests
 frontend/src/            React UI, API client, types, annotation geometry, and styles
 frontend/public/         Logo and static assets
 data/                    Empty runtime directories retained with .gitkeep
-docs/                    Architecture, safety, model, validation, and roadmap documentation
+docs/                    Architecture, safety, model, validation, screenshots, and roadmap documentation
 wiki/                    Ready-to-publish GitHub Wiki pages
 scripts/                 Cross-platform setup and Windows process helpers
 .github/                 CI, Dependabot, issue, and pull-request configuration
@@ -267,6 +255,7 @@ CODE_OF_CONDUCT.md       Community participation guidelines
 
 - [Documentation index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [AI Setup and providers](docs/AI_SETUP.md)
 - [Safety and operating limits](docs/SAFETY.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Model Finder](docs/MODEL_FINDER.md)

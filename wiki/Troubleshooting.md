@@ -5,7 +5,7 @@
 1. Start the application with `start_medray_v2.bat` on Windows or `./start_medray_v2.sh` on Linux/macOS.
 2. Check `http://127.0.0.1:8765/api/health` or the backend URL printed by the launcher.
 3. If a previous process owns a port on Windows, run `stop_medray_v2.bat` and start again.
-4. Check that Python 3.10+ and Node.js 20/22 LTS are installed.
+4. Check that Python 3.10+ and Node.js 22.12+ or 24 LTS are installed.
 
 ## Setup fails
 

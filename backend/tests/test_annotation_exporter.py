@@ -147,6 +147,19 @@ def test_annotated_png_renders_manual_point_and_polygon(tmp_path, monkeypatch):
     assert path.endswith("annotated_reviewed.png")
 
 
+def test_annotated_png_renders_measurement_shapes(tmp_path, monkeypatch):
+    image_path = tmp_path / "measurements.png"
+    Image.new("RGB", (64, 64), color="black").save(image_path)
+    monkeypatch.setattr(exporter, "get_settings", lambda: SimpleNamespace(exports_dir=tmp_path / "exports"))
+    path = exporter.export_annotated_png("case-measurements", str(image_path), [
+        {"label": "ROI", "source": "manual user annotation", "visible": True, "coordinate": {"type": "ellipse", "x": 5, "y": 5, "width": 20, "height": 10}},
+        {"label": "Length", "source": "manual user annotation", "visible": True, "coordinate": {"type": "length", "points": [[10, 40], [50, 40]]}},
+    ])
+    with Image.open(path) as image:
+        assert image.getpixel((5, 10)) != (0, 0, 0)
+        assert image.getpixel((30, 40)) != (0, 0, 0)
+
+
 def test_annotated_png_scales_legacy_preview_coordinates_to_original_image(tmp_path, monkeypatch):
     image_path = tmp_path / "large.png"
     Image.new("RGB", (200, 100), color="black").save(image_path)

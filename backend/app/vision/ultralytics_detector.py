@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from PIL import Image
 
 from app.model_finder.providers import list_local_model_artifacts
 from app.model_registry.validation_evidence import hash_artifact_file
+from app.runtime.secrets import safe_error
 
 
 FRACTURE_LABEL_TERMS = ("fracture", "fractured", "break")
@@ -68,6 +70,9 @@ def run_msk_fracture_detector(image_path: str | None, model_id: str, cpu_only: b
         return {"status": "skipped", "model": model_id, "detail": detail, "detections": [], "warnings": [detail]}
 
     try:
+        # A model must never cause hidden dependency installation or telemetry.
+        os.environ["YOLO_AUTOINSTALL"] = "false"
+        os.environ["YOLO_OFFLINE"] = "true"
         from ultralytics import YOLO
 
         with Image.open(image_path) as image:
@@ -115,7 +120,7 @@ def run_msk_fracture_detector(image_path: str | None, model_id: str, cpu_only: b
         return {
             "status": "failed",
             "model": model_id,
-            "detail": str(exc),
+            "detail": safe_error(exc),
             "detections": [],
             "warnings": [f"MSK localization failed: {exc}"],
         }

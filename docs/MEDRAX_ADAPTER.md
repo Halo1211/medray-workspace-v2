@@ -1,62 +1,39 @@
 # MedRAX Adapter
 
-MedRay v2 tidak menyalin MedRAX. Ia menyediakan adapter tipis agar tool eksternal bisa dipasang tanpa mengubah schema UI dan storage.
+MedRay does not copy MedRAX. It provides a narrow adapter boundary so an external research tool can participate without changing UI or storage contracts.
 
-## Tujuan
+## Goals
 
-- Menjaga output tetap terstruktur: findings, annotations, report, warnings, dan model trace.
-- Membuat tiap tool bisa gagal secara eksplisit tanpa membuat hasil terlihat seperti diagnosis pasti.
-- Memisahkan provenance koordinat: model-returned coordinate, segmentation mask, fallback heuristic, atau manual user annotation.
-- Membuat annotation/grounding/segmentation menjadi bukti visual yang bisa direview, bukan hanya dekorasi overlay.
-- Menyimpan runtime snapshot agar hasil bisa diaudit ulang.
+- Normalize findings, annotations, reports, warnings, and model traces.
+- Preserve explicit failure and fallback states.
+- Distinguish model coordinates, masks, fallback regions, and human annotations.
+- Keep localization evidence reviewable and exportable.
+- Persist the runtime snapshot required to audit a result.
 
-## Komponen Lokal
+## Tool contract
 
-- `MedRaxTool`: kontrak minimal untuk wrapper tool.
-- `AgentOrchestrator`: menjalankan tool secara berurutan dan mengumpulkan trace.
-- `OutputNormalizer`: menjaga hasil sesuai `AnalysisResult`.
-- `RuntimeConfig`: memilih backend dan model per fungsi.
-- `ModelMetadata`: target metadata untuk model card/registry.
+An adapter receives a bounded context containing the case identifier, stored image path, preview path, image metadata, custom prompt, and runtime settings. It returns:
 
-## Tool Contract Yang Diinginkan
+- `task_type`: classification, segmentation, grounding, VQA, report, or utility.
+- `status`: ok, fallback, skipped, or failed.
+- `model`: the actual model identifier.
+- `outputs`: a locally safe raw payload.
+- `normalized`: supported result fields.
+- `warnings`: limitations and failure conditions.
 
-Wrapper tool sebaiknya menerima context berikut:
+Coordinate-producing tools must also return coordinate space, source and model-input dimensions, resize/crop/padding transforms, coordinate or mask provenance, and links to related findings when available.
 
-- `case_id`
-- `image.stored_path`
-- `image.preview_path`
-- `image.metadata`
-- `custom_prompt`
-- `runtime`
+## Integration order
 
-Wrapper tool sebaiknya mengembalikan:
+1. DICOM utility and metadata validation.
+2. Chest X-ray classification with calibration warnings.
+3. Annotation provenance, revision, and export.
+4. Grounding only when coordinates originate from a reviewed model.
+5. Segmentation only when masks and transforms remain auditable.
+6. Report generation from reviewed structured evidence.
+7. VQA or planning after deterministic tools are stable.
 
-- `task_type`: classification, segmentation, grounding, vqa, report, utility.
-- `status`: ok, fallback, skipped, failed.
-- `model`: nama model aktual.
-- `outputs`: payload mentah yang masih aman disimpan lokal.
-- `normalized`: findings/annotations/report fields bila tersedia.
-- `warnings`: keterbatasan model dan kondisi gagal.
+## References
 
-Untuk tool annotation, grounding, atau segmentation, wrapper juga harus menyimpan:
-
-- coordinate space: original image, preview image, atau model input.
-- original image size dan model input size.
-- transform metadata: resize, crop, padding, normalization.
-- coordinate/mask provenance: bbox, polygon, mask path, mask checksum bila ada.
-- relationship ke finding atau candidate diagnosis bila tersedia.
-
-## Prioritas Integrasi
-
-1. DICOM utility dan metadata validation.
-2. CXR classifier dengan probabilitas dan calibration note.
-3. Annotation review layer untuk provenance dan export overlay.
-4. Grounding model hanya bila koordinat benar-benar berasal dari model.
-5. Segmentation model hanya bila transform resize dan mask provenance ikut tersimpan.
-6. Report generator yang memakai findings, candidate diagnosis, dan annotation refs terstruktur.
-7. VQA/agent planner setelah tool deterministik cukup stabil.
-
-## Referensi
-
-- MedRAX repository: https://github.com/bowang-lab/MedRAX
-- MedRAX paper: https://arxiv.org/abs/2502.02673
+- [MedRAX repository](https://github.com/bowang-lab/MedRAX)
+- [MedRAX paper](https://arxiv.org/abs/2502.02673)

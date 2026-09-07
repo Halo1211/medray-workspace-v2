@@ -3,7 +3,7 @@
 ## Requirements
 
 - Python 3.10 or newer.
-- Node.js 20 LTS or 22 LTS and npm.
+- Node.js 22.12+ or 24 LTS and npm.
 - Windows 10/11, Linux, or macOS.
 - Optional: Ollama for local chat or vision-language models.
 

@@ -5,13 +5,17 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from PIL import UnidentifiedImageError
+from pydicom.errors import InvalidDicomError
+from app.runtime.secrets import safe_error
 
 from app.anatomy.router import anatomy_profiles, resolve_profile_model, route_study
 from app.annotations.exporter import export_annotated_png, export_annotation_review_package
 from app.audit.bundle import export_audit_bundle
 from app.config import database_location_info, get_settings, set_database_folder
 from app.dicom.safety import dicom_safety_report, export_deidentified_dicom, export_deidentified_metadata
+from app.dicom.viewer import dicom_viewer_profile, render_dicom_frame
 from app.model_finder.providers import (
     clear_github_token,
     clear_huggingface_token,
@@ -212,8 +216,10 @@ def upload(file: UploadFile = File(...), case_title: str = Form("")) -> dict[str
         )
         save_case(case.model_dump(mode="json"))
         return {"case": case.model_dump(mode="json"), "image": image, "preview_data_url": image_to_data_url(image["preview_path"])}
+    except (UnidentifiedImageError, InvalidDicomError):
+        raise HTTPException(400, "This image or DICOM file is damaged or unsupported. Choose another image, or export it again from the source application.") from None
     except Exception as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, safe_error(exc)) from None
 
 
 @router.delete("/cases")
@@ -288,6 +294,32 @@ def dicom_image_safety(case_id: str, image_id: str) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.get("/dicom/{case_id}/images/{image_id}/viewer-profile")
+def dicom_image_viewer_profile(case_id: str, image_id: str) -> dict[str, Any]:
+    case = get_case(case_id)
+    if not case:
+        raise HTTPException(404, "Case not found")
+    _image, source = _dicom_source(case, image_id)
+    try:
+        return dicom_viewer_profile(source)
+    except Exception as exc:
+        raise HTTPException(400, safe_error(exc)) from None
+
+
+@router.get("/dicom/{case_id}/images/{image_id}/preview")
+def dicom_image_preview(case_id: str, image_id: str, frame: int = 0, window_center: float | None = None, window_width: float | None = None, invert: bool = False) -> Response:
+    case = get_case(case_id)
+    if not case:
+        raise HTTPException(404, "Case not found")
+    _image, source = _dicom_source(case, image_id)
+    try:
+        return Response(render_dicom_frame(source, frame, window_center, window_width, invert), media_type="image/png", headers={"Cache-Control": "no-store"})
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(400, safe_error(exc)) from None
+
+
 @router.post("/dicom/{case_id}/images/{image_id}/export-metadata")
 def dicom_metadata_export(case_id: str, image_id: str) -> dict[str, Any]:
     case = get_case(case_id)
@@ -326,7 +358,7 @@ def image(path: str) -> FileResponse:
 
 
 @router.post("/analysis/{case_id}")
-async def analyze(case_id: str, custom_prompt: str = Form(""), language: str = Form("id"), anatomy_profile_override: str = Form("")) -> dict[str, Any]:
+async def analyze(case_id: str, custom_prompt: str = Form(""), language: str = Form("en"), anatomy_profile_override: str = Form("")) -> dict[str, Any]:
     case = get_case(case_id)
     if not case:
         raise HTTPException(404, "Case not found")
@@ -410,7 +442,8 @@ def chat(case_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if str(m.get("role")) in {"user", "assistant"}
     ]
     message = str(payload.get("message") or "")
-    reply = chat_response(message, history, runtime, case)
+    language = "id" if payload.get("language") == "id" else "en"
+    reply = chat_response(message, history, runtime, case, language=language)
     case["chat_history"] = _list_of_dicts(case.get("chat_history"))
     case["chat_history"].append(ChatMessage(role="user", content=message).model_dump(mode="json"))
     case["chat_history"].append(ChatMessage(role="assistant", content=reply["content"]).model_dump(mode="json"))
@@ -508,6 +541,11 @@ def get_runtime() -> dict[str, Any]:
 @router.post("/runtime")
 def set_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     config = RuntimeConfig(**payload)
+    if config.classification_model.startswith("torchxrayvision:"):
+        from app.ai_setup.service import xray_readiness
+        from app.ai_setup.catalog import TXRV_ID
+        if config.classification_model != TXRV_ID or not xray_readiness()["ready_for_inference"]:
+            raise HTTPException(400, "Open AI Setup > X-ray Vision and test the supported classifier before activation.")
     gate_issues = runtime_local_model_gate_issues(config.model_dump(mode="json"))
     if gate_issues:
         raise HTTPException(400, "Review required before runtime use: " + " ".join(gate_issues))
@@ -601,7 +639,9 @@ def model_hardware_recommendations() -> dict[str, Any]:
 @router.get("/models/detail")
 def model_finder_detail(source: str = "hf", id: str = "", url: str = "") -> dict[str, Any]:
     try:
-        return model_detail(source, id, url)
+        from app.ai_setup.catalog import compatibility
+        detail = model_detail(source, id, url)
+        return {**detail, "compatibility": compatibility(detail)}
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -628,12 +668,14 @@ def local_import(payload: dict[str, str]) -> dict[str, Any]:
 
 
 @router.post("/models/download")
-def download(payload: dict[str, str]) -> dict[str, Any]:
+def download(payload: dict[str, Any]) -> dict[str, Any]:
     url = payload.get("url", "")
     if not url.startswith(("https://", "http://")):
         raise HTTPException(400, "Only http/https manual downloads are allowed.")
     try:
-        return download_manager.start(url, payload.get("filename"))
+        runtime = RuntimeConfig(**load_runtime_config(RuntimeConfig().model_dump(mode="json")))
+        connections = payload.get("connections", runtime.download_connections)
+        return download_manager.start(url, payload.get("filename"), connections, str(payload.get("checksum_sha256") or ""))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

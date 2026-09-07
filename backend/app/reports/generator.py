@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import textwrap
 from typing import Any
 
@@ -293,7 +292,6 @@ def report_markdown(case: dict[str, Any], language: str = "id") -> str:
     analysis = case.get("analysis") if isinstance(case.get("analysis"), dict) else {}
     report_value = _report_for_language(case, analysis, language)
     report = report_value if isinstance(report_value, dict) else {}
-    reading = analysis.get("systematic_reading") if isinstance(analysis.get("systematic_reading"), dict) else {}
     quality = analysis.get("image_quality") if isinstance(analysis.get("image_quality"), dict) else {}
     result_cards = _list_of_dicts(analysis.get("result_cards"))
     title = case.get("title") or case.get("case_id")

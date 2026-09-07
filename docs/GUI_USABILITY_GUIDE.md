@@ -1,96 +1,73 @@
-# MedRay GUI Usability Guide
+# GUI Usability Guide
 
-Dokumen ini menerjemahkan prinsip human-factors dan usability workstation radiologi menjadi aturan praktis untuk MedRay v2. Tujuannya memudahkan penggunaan tanpa mengurangi fitur atau mengaburkan status keselamatan.
+This guide translates human-factors and radiology-workstation principles into practical MedRay interface rules. It is design guidance for a research prototype, not evidence of regulatory compliance or formal usability validation.
 
-## Prinsip utama
+## Core principles
 
-1. **Task-first, feature-preserving**
-   Fitur tetap tersedia, tetapi ditampilkan mengikuti tugas utama: `Import -> Route -> Review image -> Inspect AI signal -> Review annotation -> Draft report -> Export`. Fitur lanjutan berada di panel/tab yang konsisten, bukan dihapus.
+1. **Task-first, feature-preserving.** Keep the workflow aligned to `Import → Route → Review image → Inspect AI signal → Review annotation → Draft report → Export`. Place specialist controls behind consistent disclosure instead of removing them.
+2. **Persistent study identity.** Keep the case label, study, series, view, laterality, and active-image identity visible wherever evidence is reviewed.
+3. **Staged disclosure.** Surface image quality, anatomy route, active models, confidence, review state, and the next safe action before technical traces.
+4. **Redundant status cues.** Distinguish demo, fallback, AI signal, human-reviewed, rejected, uncertain, and protocol-validated states with text or icons as well as color.
+5. **Reversible work.** Preserve annotation revision history and require clear confirmation around deletion, risky export, and runtime changes.
+6. **Accessible interaction.** Important controls must be keyboard reachable, visibly focused, sufficiently large, and usable without drag-only gestures.
+7. **Local safety copy.** Place concise warnings next to the action they govern.
 
-2. **Study/image identity selalu terlihat**
-   Case label, study, series, view, laterality, dan image aktif harus tetap terlihat di Reading Room, Result Cards, Report, DICOM Safety, dan Validation Workbench. Perubahan image aktif harus mengosongkan atau memuat ulang state yang relevan secara eksplisit.
+## Reading Room
 
-3. **Staged disclosure**
-   Tampilkan keputusan penting lebih dulu: kualitas image, routing anatomy, model aktif, confidence posture, review status, dan safe next action. Detail trace, metadata, dan evidence tetap tersedia melalui disclosure yang dapat dibuka.
+- Keep the active case and image context in the header.
+- Provide an immediate **New case** action that resets transient workspace state without a page refresh.
+- Keep image tools near the viewer and evidence tools in the review panel.
+- Treat AI annotations as proposals: display origin, source model, confidence, review state, and revisions.
+- Support origin, review-state, and minimum-confidence filters without hiding manual annotations behind an AI threshold.
+- Allow batch accept/reject only for visible, unreviewed AI proposals.
+- Make rerunning AI explicit and preserve human edits as auditable revisions.
+- Show confidence as a percentage, but never as a diagnosis or calibration claim.
 
-4. **Status yang dapat dibedakan**
-   Gunakan label dan warna berbeda untuk `demo/fallback`, `model signal`, `human reviewed`, `rejected`, `uncertain`, dan `validated for protocol`. Jangan mengandalkan warna saja; selalu sertakan teks atau ikon ber-label.
+## Case Library and validation
 
-5. **Reversibility dan confirmation**
-   Penghapusan case, clear-all, export de-identified DICOM, lock annotation, dan perubahan runtime harus memiliki konfirmasi atau status yang jelas. Operasi yang berisiko tidak boleh terjadi hanya karena klik pada area yang mudah salah.
+- Keep validation in the same page as the registry but above the long, internally scrollable case list.
+- Load cases in bounded batches and retain search, rename, open, and delete actions.
+- Make the difference between “no reference label” and “AI output not reviewed” explicit.
+- Preserve the current case context when opening validation.
 
-6. **Keyboard dan target interaksi**
-   Semua kontrol penting harus dapat dicapai keyboard, memiliki focus state yang terlihat, label yang bermakna, target sentuh yang cukup besar, dan alternatif untuk drag-only interaction. Shortcut boleh ditambahkan sebagai akselerator, bukan satu-satunya cara memakai fitur.
+## AI Setup
 
-7. **Safety copy yang singkat dan dekat dengan tindakan**
-   Gunakan kalimat langsung seperti `Grounding disabled: no reviewed localization artifact`, `Image is not DICOM`, atau `Export requires pixel review acknowledgement`. Hindari peringatan panjang yang terpisah dari tombol terkait.
+- Keep the demo available without setup.
+- Separate provider connections from specialist classifiers because their inputs and outputs differ.
+- Let vision, chat, and report tasks keep independent tested provider assignments.
+- Describe hosted-provider data egress before enabling any request.
+- Show why a model cannot be activated next to the disabled action.
+- Treat downloaded, reviewed, technically ready, and protocol validated as separate states.
 
-## Baseline simplifikasi — 25 Agustus 2026
+## DICOM safety
 
-Baseline GUI saat ini menerapkan aturan berikut:
+- Summarize patient tags, private tags, burned-in pixel risk, UID changes, and source preservation before export.
+- Group preview changes as removed, replaced/regenerated, and retained.
+- Require a clear pixel-review acknowledgement when burned-in or high-risk content may remain.
 
-- Empat tujuan harian tetap terlihat: Dasbor, Ruang Baca, Library Kasus, dan Panduan. Validasi, Cari Model, Pengaturan AI, dan Tentang tetap tersedia di grup navigasi `Riset` yang dapat dibuka saat diperlukan.
-- Header hanya menjelaskan tujuan halaman saat ini; disclaimer global tidak diulang di setiap header, tetapi status riset tetap terlihat dan safety copy tetap dekat dengan aksi berisiko.
-- Kontrol yang belum dapat dipakai tidak memenuhi layar: toolbar image dan panel hasil Ruang Baca muncul setelah konteks yang diperlukan tersedia.
-- Library memuat 15 kasus per batch, menghilangkan UUID dari tampilan utama, dan memindahkan clear-all ke `Kelola`.
-- Metadata Validasi, setup/model teknis, direct download, dan katalog referensi tetap tersedia melalui disclosure atau tab yang dapat dibuka pengguna.
-- Pengaturan AI memakai lapisan sederhana terlebih dahulu: `Default`, `Ollama`, atau `Compatible API`. Seluruh hardware advisor, model slots, adapters, registry, dan pengaturan riset lama tetap tersedia melalui `Advanced model tools`.
-- Audit browser pada sembilan halaman di viewport sempit tidak menemukan horizontal overflow. Build produksi dan 14 tes frontend lulus. Ini adalah regression baseline, bukan validasi human-factors formal.
+## Light and dark themes
 
-## Pola layar yang direkomendasikan
+- Verify contrast for selected cards, muted copy, badges, outlines, disabled controls, and the logo in both themes.
+- Do not reuse dark-theme surfaces or muted colors in light mode.
+- Preserve the same visual hierarchy and focus visibility across themes.
 
-### Reading Room
+## Usability test checklist
 
-- Header tetap: case label, `image n/m`, view/laterality, study/series identity, routing status.
-- Kolom kiri: input/import dan metadata ringkas.
-- Tengah: image viewer dan toolbar.
-- Kolom kanan: tab bertingkat `AI Output`, `Result Cards`, `Annotations`, `Report`, `AI Chat`, `Trust`, `DICOM Safety`, `Roadmap`.
-- Tambahkan progress step yang dapat diklik tanpa mengubah urutan kerja atau menyembunyikan panel lanjutan.
-- Saat berpindah image, tampilkan status `not analyzed`, `analyzed / review`, atau `analysis failed` di navigator; jangan hanya mengubah gambar tanpa status.
+- A new user can import a study and find the analysis action without reading long documentation.
+- A user can identify the active image at a glance.
+- A user can answer which model produced an output, its confidence, and whether it was reviewed.
+- A user can switch cases without refreshing the browser.
+- A user cannot export a high-risk DICOM without seeing the reason and acknowledging pixel review.
+- Keyboard focus remains visible when panels and tabs change.
+- Errors provide a recovery action rather than a raw exception.
+- Representative users complete realistic tasks while completion rate, time, interaction errors, near misses, and SUS are recorded.
 
-### Result Cards dan Report
+## References
 
-- Setiap card menampilkan `source`, `image identity`, `review status`, `confidence`, `evidence`, dan `next safe action` dalam urutan tetap.
-- Tombol promosi ke report hanya aktif setelah status review sesuai aturan.
-- Rejected/unreviewed output tetap dapat dilihat untuk provenance, tetapi tidak boleh terlihat seperti temuan report yang sudah disetujui.
-
-### Model Finder dan Runtime Settings
-
-- Anggap konfigurasi model sebagai fitur opsional: mode bawaan harus dapat digunakan tanpa setup.
-- Minta hanya data yang dibutuhkan oleh mode terpilih. URL Ollama dan bantuan instalasi berada di disclosure; izin pengiriman data kasus ditampilkan dekat konfigurasi API.
-- Pertahankan semua alat teknis melalui `Advanced model tools`; penyederhanaan berarti progressive disclosure, bukan penghapusan fitur.
-- Pisahkan `discovered`, `imported`, `human reviewed`, `protocol validated`, dan `runtime eligible` sebagai status terpisah.
-- Tampilkan alasan tombol `Use for ...` disabled tepat di dekat tombol.
-- Untuk cloud-capable backend, tampilkan indikator data egress dan default local-only secara konsisten.
-
-### DICOM Safety
-
-- Ringkas risiko sebelum tombol export: patient tags, private tags, burned-in pixels, UID changes, dan source preservation.
-- Preview perubahan menggunakan tiga kelompok: `removed`, `replaced/regenerated`, `retained`.
-- Acknowledgement untuk burned-in/high-risk pixel review harus berada di area tombol export dan memakai boolean yang jelas.
-
-## Checklist pengujian usability
-
-- Pengguna baru dapat mengunggah satu image dan menemukan tombol analisis tanpa membaca dokumentasi panjang.
-- Pengguna dapat membedakan image aktif dari thumbnail lain dalam kurang dari satu pandangan.
-- Pengguna dapat menjawab “model apa yang aktif?”, “hasil ini berasal dari mana?”, dan “sudah direview atau belum?” tanpa membuka lebih dari satu panel tambahan.
-- Pengguna tidak dapat salah mengekspor DICOM berisiko tinggi tanpa melihat alasan dan melakukan acknowledgement.
-- Semua aksi utama dapat dilakukan dengan keyboard dan focus tidak hilang saat panel/tab berubah.
-- Error menjelaskan tindakan pemulihan, bukan hanya exception mentah.
-- Validasi dilakukan dengan skenario task dan diukur dengan waktu, error interaksi, completion rate, serta System Usability Scale (SUS); jangan hanya mengandalkan opini developer.
-
-## Referensi
-
-- FDA, *Applying Human Factors and Usability Engineering to Medical Devices*: https://www.fda.gov/regulatory-information/search-fda-guidance-documents/applying-human-factors-and-usability-engineering-medical-devices
-- Moise & Atkins, *Designing Better Radiology Workstations*: https://pmc.ncbi.nlm.nih.gov/articles/PMC3046708/
-- *A review of existing and potential computer user interfaces for modern radiology*: https://pmc.ncbi.nlm.nih.gov/articles/PMC6108970/
-- *Design Requirements for Radiology Workstations*: https://pmc.ncbi.nlm.nih.gov/articles/PMC3043976/
-- W3C, *Web Content Accessibility Guidelines (WCAG) 2.2*: https://www.w3.org/TR/wcag/
-- W3C, *Help Users Understand What Things Are and How to Use Them*: https://www.w3.org/WAI/WCAG2/supplemental/objectives/o1-understandable/
-- GOV.UK, *Making your service look like GOV.UK* — mulai dari satu hal per halaman dan sederhanakan layanan: https://www.gov.uk/service-manual/design/making-your-service-look-like-govuk
-- GOV.UK, *Structuring forms* — satu hal per halaman membantu fokus, pemahaman, mobile, dan pemulihan error: https://www.gov.uk/service-manual/design/form-structure
-- Microsoft, *Progressive disclosure controls* — pertahankan status penting dan tampilkan detail saat diminta: https://learn.microsoft.com/en-us/windows/win32/uxguide/ctrl-progressive-disclosure-controls
-- GOV.UK, *Details* — gunakan disclosure untuk informasi yang hanya dibutuhkan sebagian pengguna dan jangan sembunyikan informasi yang dibutuhkan mayoritas: https://design-system.service.gov.uk/components/details/
-- Microsoft, *Wizards* — arahkan satu tugas utama, kurangi halaman opsional, dan tampilkan langkah lanjutan setelah prasyarat terpenuhi: https://learn.microsoft.com/en-us/windows/win32/uxguide/win-wizards
-
-Dokumen ini adalah panduan desain dan usability untuk riset/prototyping; bukan pengganti validasi human-factors formal atau persyaratan regulatori.
+- [FDA: Applying Human Factors and Usability Engineering to Medical Devices](https://www.fda.gov/regulatory-information/search-fda-guidance-documents/applying-human-factors-and-usability-engineering-medical-devices)
+- [WCAG 2.2](https://www.w3.org/TR/WCAG22/)
+- [W3C cognitive accessibility objectives](https://www.w3.org/WAI/WCAG2/supplemental/objectives/o1-understandable/)
+- [GOV.UK: Structuring forms](https://www.gov.uk/service-manual/design/form-structure)
+- [GOV.UK: Check answers](https://design-system.service.gov.uk/patterns/check-answers/)
+- [Microsoft: Progressive disclosure controls](https://learn.microsoft.com/en-us/windows/win32/uxguide/ctrl-progressive-disclosure-controls)
+- [Design Requirements for Radiology Workstations](https://pmc.ncbi.nlm.nih.gov/articles/PMC3043976/)

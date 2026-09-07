@@ -1,4 +1,4 @@
-import type { AnalysisResult, AnatomyRoute, AnnotationReviewExport, AuditBundle, CaseRecord, DatabaseLocation, DicomSafetyReport, DownloadJob, HardwarePlan, HuggingFaceAuthStatus, LocalModelArtifact, ModelCard, ReferenceCatalog, RuntimeConfig, StudyImage, ValidationLabel, ValidationResult, VisionAdapter } from "../types";
+import type { AnalysisResult, AnatomyRoute, AnnotationReviewExport, AuditBundle, CaseRecord, DatabaseLocation, DicomSafetyReport, DicomViewerProfile, DownloadJob, HardwarePlan, HuggingFaceAuthStatus, LocalModelArtifact, ModelCard, ReferenceCatalog, RuntimeConfig, StudyImage, ValidationLabel, ValidationResult, VisionAdapter } from "../types";
 
 const CONFIGURED_API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8765/api";
 let activeApiBase = CONFIGURED_API_BASE;
@@ -38,12 +38,13 @@ async function discoverApiBase() {
   throw new Error(`Backend offline. Jalankan start_medray_v2.bat lalu tunggu sampai Backend ready. Checked: ${failures.slice(0, 4).join("; ")}`);
 }
 
-async function json<T>(path: string, init?: RequestInit): Promise<T> {
+export async function json<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   const method = String(init?.method || "GET").toUpperCase();
   const retryable = method === "GET" || method === "HEAD" || method === "OPTIONS";
   try {
-    res = await tryFetch(`${activeApiBase}${path}`, init);
+    const timeout = path === "/ai-setup/local/import" ? 600000 : path.startsWith("/analysis/") || path.startsWith("/chat/") ? 360000 : 30000;
+    res = await tryFetch(`${activeApiBase}${path}`, init, timeout);
   } catch {
     if (!retryable) throw new Error("Backend request timed out or failed; the operation was not retried automatically.");
     const base = await discoverApiBase();
@@ -53,7 +54,11 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
     const base = await discoverApiBase();
     res = await tryFetch(`${base}${path}`, init);
   }
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    let detail = `Request failed (${res.status}). Please retry.`;
+    try { const body = await res.json(); if (typeof body.detail === "string") detail = body.detail; } catch { /* keep readable fallback */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 
@@ -94,6 +99,7 @@ export const api = {
     body: JSON.stringify({ image_id: imageId })
   }),
   dicomSafety: (caseId: string, imageId: string) => json<DicomSafetyReport>(`/dicom/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/safety`),
+  dicomViewerProfile: (caseId: string, imageId: string) => json<DicomViewerProfile>(`/dicom/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/viewer-profile`),
   exportDicomMetadata: (caseId: string, imageId: string) => json<{ path: string; payload: Record<string, unknown> }>(`/dicom/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/export-metadata`, { method: "POST" }),
   exportDeidentifiedDicom: (caseId: string, imageId: string, acknowledgeBurnedInRisk: boolean) => json<Record<string, unknown>>(`/dicom/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/export-deidentified`, {
     method: "POST",
@@ -116,10 +122,10 @@ export const api = {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   }),
-  chat: (caseId: string, message: string) => json<{ history: CaseRecord["chat_history"]; backend: string; fallback: boolean }>(`/chat/${encodeURIComponent(caseId)}`, {
+  chat: (caseId: string, message: string, language: "id" | "en" = "en") => json<{ history: CaseRecord["chat_history"]; backend: string; fallback: boolean }>(`/chat/${encodeURIComponent(caseId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message })
+    body: JSON.stringify({ message, language })
   }),
   runtime: () => json<RuntimeConfig>("/runtime"),
   databaseLocation: () => json<DatabaseLocation>("/storage/database"),
@@ -146,7 +152,7 @@ export const api = {
   importModel: (path: string) => json<Record<string, unknown>>("/models/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) }),
   localModels: () => json<LocalModelArtifact[]>("/models/local"),
   saveLocalModelCard: (payload: Record<string, unknown>) => json<Record<string, unknown>>("/models/model-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }),
-  downloadModel: (url: string, filename?: string) => json<DownloadJob>("/models/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, filename }) }),
+  downloadModel: (url: string, filename?: string, connections?: number, checksumSha256?: string) => json<DownloadJob>("/models/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, filename, connections, checksum_sha256: checksumSha256 }) }),
   downloads: () => json<DownloadJob[]>("/models/downloads"),
   pauseDownload: (id: string) => json<DownloadJob>(`/models/downloads/${encodeURIComponent(id)}/pause`, { method: "POST" }),
   resumeDownload: (id: string) => json<DownloadJob>(`/models/downloads/${encodeURIComponent(id)}/resume`, { method: "POST" }),
@@ -160,3 +166,9 @@ export const api = {
 };
 
 export const imageUrl = (path?: string) => path ? `${activeApiBase}/image?path=${encodeURIComponent(path)}` : "";
+export const dicomPreviewUrl = (caseId: string, imageId: string, frame = 0, windowCenter?: number, windowWidth?: number, invert = false) => {
+  const query = new URLSearchParams({ frame: String(frame), invert: String(invert) });
+  if (Number.isFinite(windowCenter)) query.set("window_center", String(windowCenter));
+  if (Number.isFinite(windowWidth)) query.set("window_width", String(windowWidth));
+  return `${activeApiBase}/dicom/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/preview?${query}`;
+};

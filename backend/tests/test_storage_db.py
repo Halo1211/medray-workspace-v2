@@ -151,7 +151,9 @@ def test_database_folder_change_copies_existing_sqlite_file(tmp_path, monkeypatc
     target_folder = tmp_path / "new-location"
     current_folder.mkdir()
     current_db = current_folder / "medray_v2.sqlite3"
-    current_db.write_bytes(b"sqlite-placeholder")
+    with db.sqlite3.connect(current_db) as connection:
+        connection.execute("CREATE TABLE fixture (value TEXT)")
+        connection.execute("INSERT INTO fixture VALUES ('saved case')")
     settings = SimpleNamespace(data_dir=current_folder, db_path=current_db)
     monkeypatch.setattr(config, "get_settings", lambda: settings)
     monkeypatch.setattr(config, "DATABASE_LOCATION_CONFIG", tmp_path / "location.json")
@@ -160,7 +162,8 @@ def test_database_folder_change_copies_existing_sqlite_file(tmp_path, monkeypatc
 
     assert result["restart_required"] is True
     assert result["copied_existing_database"] is True
-    assert (target_folder / "medray_v2.sqlite3").read_bytes() == b"sqlite-placeholder"
+    with db.sqlite3.connect(target_folder / "medray_v2.sqlite3") as connection:
+        assert connection.execute("SELECT value FROM fixture").fetchone()[0] == "saved case"
     assert (tmp_path / "location.json").exists()
 
 
@@ -172,7 +175,8 @@ def test_database_folder_does_not_overwrite_existing_database(tmp_path, monkeypa
     current_folder.mkdir()
     target_folder.mkdir()
     current_db = current_folder / "medray_v2.sqlite3"
-    current_db.write_bytes(b"current")
+    with db.sqlite3.connect(current_db) as connection:
+        connection.execute("CREATE TABLE fixture (value TEXT)")
     (target_folder / "medray_v2.sqlite3").write_bytes(b"existing")
     monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(data_dir=current_folder, db_path=current_db))
     monkeypatch.setattr(config, "DATABASE_LOCATION_CONFIG", tmp_path / "location.json")
@@ -191,7 +195,8 @@ def test_database_location_stays_active_until_restart(tmp_path, monkeypatch):
     target_folder = tmp_path / "new-location"
     current_folder.mkdir()
     current_db = current_folder / "medray_v2.sqlite3"
-    current_db.write_bytes(b"current")
+    with db.sqlite3.connect(current_db) as connection:
+        connection.execute("CREATE TABLE fixture (value TEXT)")
     monkeypatch.setattr(config, "DATABASE_LOCATION_CONFIG", tmp_path / "location.json")
     monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(data_dir=current_folder, db_path=current_db))
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -126,6 +125,28 @@ def export_annotated_png(
                 draw.polygon(points, outline=color)
                 draw.line([*points, points[0]], fill=color, width=3)
                 draw.text((points[0][0] + 5, max(0, points[0][1] - 16)), str(ann.get("label") or "polygon"), fill=color)
+            elif coord.get("type") == "ellipse":
+                x = _safe_float(coord.get("x")) * scale_x
+                y = _safe_float(coord.get("y")) * scale_y
+                w = _safe_float(coord.get("width")) * scale_x
+                h = _safe_float(coord.get("height")) * scale_y
+                if w <= 0 or h <= 0:
+                    continue
+                draw.ellipse([x, y, x + w, y + h], outline=color, width=3)
+                draw.text((x + 5, max(0, y - 16)), str(ann.get("label") or "ellipse ROI"), fill=color)
+            elif coord.get("type") in {"length", "angle"}:
+                points = [
+                    (_safe_float(item[0]) * scale_x, _safe_float(item[1]) * scale_y)
+                    for item in coord.get("points", [])
+                    if isinstance(item, (list, tuple)) and len(item) == 2
+                ]
+                required = 2 if coord.get("type") == "length" else 3
+                if len(points) != required:
+                    continue
+                draw.line(points, fill=color, width=3)
+                for point in points:
+                    draw.ellipse([point[0] - 4, point[1] - 4, point[0] + 4, point[1] + 4], fill=color)
+                draw.text((points[0][0] + 5, max(0, points[0][1] - 16)), str(ann.get("label") or coord.get("type")), fill=color)
         canvas.save(out_path)
     return str(out_path)
 
@@ -182,10 +203,13 @@ def export_annotation_review_package(case: dict[str, Any]) -> dict[str, Any]:
     images = case.get("images", [])
     for index, image in enumerate(images):
         image_id = str(image.get("image_id") or f"{case_id}:{index}")
-        def belongs(annotation: dict[str, Any]) -> bool:
+        accepted_ids = {image_id, str(image.get("sop_instance_uid") or ""), str(image.get("filename") or "")}
+        is_primary = index == 0
+
+        def belongs(annotation: dict[str, Any], *, accepted=accepted_ids, primary=is_primary) -> bool:
             source_id = str(annotation.get("source_image_id") or "")
-            accepted_ids = {image_id, str(image.get("sop_instance_uid") or ""), str(image.get("filename") or "")}
-            return source_id in accepted_ids or (index == 0 and source_id in {"", "primary"})
+            return source_id in accepted or (primary and source_id in {"", "primary"})
+
         reviewed = [annotation for annotation in bundle["reviewed_annotations"] if belongs(annotation)]
         originals = [annotation for annotation in bundle["ai_original_annotations"] if belongs(annotation)]
         image_path = str(image.get("image_path") or "")

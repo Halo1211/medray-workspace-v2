@@ -108,10 +108,12 @@ Commercial claims such as turnaround-time reduction or high AUC are inspiration 
 - [x] Support manual box creation, move/resize, hide, accept, reject, lock, restore, and delete for manual marks.
 - [x] Persist source image ID/index, view, and series identity on each annotation.
 - [x] Export AI-original and reviewed PNGs with a comparison/provenance JSON bundle.
-- [ ] Add manual point/polygon tools and explicit redraw workflow.
-- [ ] Add a full multi-image study navigator and per-view image switching.
+- [x] Add manual point, polygon, ellipse ROI, and calibrated length tools.
+- [x] Add bounded undo/redo history, keyboard accelerators, and lock-aware editing.
+- [x] Add a full multi-image study navigator and per-view image switching.
+- [x] Preserve DICOM source frame number and Pixel Spacing-aware measurement output.
 
-Implementation status: the grounded bounding-box review workflow, stable evidence links, source-image identity contract, and separate original/reviewed exports are implemented. Full multi-image navigation and point/polygon authoring remain additive viewer work and do not block Anatomy Routing.
+Implementation status: grounded review, stable evidence links, source image/frame identity, separate original/reviewed exports, multi-image navigation, advanced manual authoring, and calibrated length/ellipse measurement are implemented. DICOM SEG/SR/GSPS serialization remains future interoperability work; JSON/PNG review packages are not represented as those DICOM SOP Classes.
 
 ### Phase 2: Anatomy Routing
 
@@ -165,6 +167,11 @@ The implementation deliberately does not bundle or auto-download community fract
 
 ## Sources
 
+- DICOM Grayscale Softcopy Presentation State: https://dicom.nema.org/medical/Dicom/2016a/output/chtml/part03/sect_A.33.html
+- DICOM Segmentation IOD: https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_a.51.html
+- DICOM Structured Report IODs: https://dicom.nema.org/medical/dicom/2024e/output/chtml/part03/sect_A.35.html
+- Cornerstone annotation state: https://www.cornerstonejs.org/docs/concepts/cornerstone-tools/annotation/state/
+- OHIF Measurement Service: https://docs.ohif.org/platform/services/data/measurementservice/
 - GE/Lunit Thoracic Care Suite: https://hospitalsmagazine.com/ge-healthcare-launches-new-ai-suite-to-detect-chest-x-ray-abnormalities/
 - FDA qXR-Detect K251934: https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfPMN/pmn.cfm?ID=K251934
 - qXR product overview: https://www.qure.ai/product/qxr

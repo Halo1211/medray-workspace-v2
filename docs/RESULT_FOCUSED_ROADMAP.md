@@ -1,4 +1,6 @@
-# Result-Focused Roadmap
+# Result-Focused Roadmap (Historical Design Record)
+
+> This document preserves the detailed milestone reasoning that shaped the current implementation. It is not the active status or verification baseline. See [ROADMAP.md](ROADMAP.md) and [AI_SETUP_VERIFICATION.md](AI_SETUP_VERIFICATION.md) for current information.
 
 MedRay v2 should help a clinician or researcher reason toward a diagnosis. It can generate AI candidate diagnoses, annotated findings, differential considerations, and report drafts, but it should not pretend to be the final accountable diagnostician. The product direction is therefore:
 

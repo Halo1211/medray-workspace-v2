@@ -1,5 +1,7 @@
 import json
-import shutil
+import sqlite3
+import time
+from contextlib import closing
 from functools import cached_property, lru_cache
 from pathlib import Path
 from pydantic import Field
@@ -109,8 +111,16 @@ def set_database_folder(folder: str) -> dict[str, str | bool]:
     copied_existing = False
     try:
         if current_path.exists():
-            shutil.copy2(current_path, target_path)
+            # Capture committed WAL pages too; copying the .sqlite3 file alone
+            # can silently omit recent cases while the app is running.
+            target_path.open("xb").close()
             copied_existing = True
+            started = time.monotonic()
+            def check_backup(status, remaining, total):
+                if time.monotonic() - started > 10:
+                    raise TimeoutError("Database backup is busy. Close other database sessions and retry.")
+            with closing(sqlite3.connect(current_path, timeout=5)) as source, closing(sqlite3.connect(target_path)) as destination:
+                source.backup(destination, pages=256, progress=check_backup, sleep=0.1)
         config_tmp = DATABASE_LOCATION_CONFIG.with_name(f"{DATABASE_LOCATION_CONFIG.name}.tmp")
         config_tmp.write_text(
             json.dumps({"database_path": str(target_path)}, indent=2),

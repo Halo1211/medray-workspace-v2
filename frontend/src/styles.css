@@ -167,7 +167,7 @@ h3 { font-size: 14px; color: #9fb3d1; }
 .sideTabs button { justify-content: center; min-height: 36px; padding: 7px; gap: 5px; font-size: 12px; }
 .sideTabs button.active { background: #1d3557; border-color: #2f5e88; }
 .sideTabs button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat, .report, .roadmapNext { display: grid; gap: 12px; }
+.chat, .report { display: grid; gap: 12px; }
 .chat .messages { min-height: 330px; max-height: calc(100vh - 300px); overflow: auto; display: grid; align-content: start; gap: 10px; }
 .messages div { max-width: 760px; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
 .messages .user { background: #1d3557; justify-self: end; }
@@ -533,10 +533,6 @@ h3 { font-size: 14px; color: #9fb3d1; }
 .modelCardSummary div { border: 1px solid #263654; border-radius: 8px; padding: 9px; display: grid; gap: 4px; }
 .modelCardSummary b { font-size: 12px; }
 .modelCardSummary span { color: #9fb3d1; font-size: 12px; }
-.roadmapNext div { border: 1px solid #263654; border-radius: 8px; padding: 11px; display: grid; gap: 5px; background: #0d1629; }
-.roadmapNext span { color: #5eead4; font-size: 12px; font-weight: 700; }
-.roadmapNext b { font-size: 14px; }
-.roadmapNext p { color: #c7d5e8; margin: 0; line-height: 1.45; }
 .validationPage { min-width: 1040px; }
 .validationLayout { display: grid; grid-template-columns: 310px minmax(280px, 1fr) minmax(320px, 420px); gap: 12px; align-items: start; }
 .validationColumn { display: grid; gap: 10px; }
@@ -645,7 +641,7 @@ body[data-theme="light"] .downloadJob { background: #ffffff; border-color: #d7de
 body[data-theme="light"] .localModel { background: #ffffff; border-color: #d7deeb; }
 body[data-theme="light"] .progressTrack { background: #eef2f8; border-color: #d7deeb; }
 body[data-theme="light"] .downloadMeta span { border-color: #d7deeb; }
-body[data-theme="light"] .workspaceStats div, body[data-theme="light"] .roadmapNext div { background: #ffffff; border-color: #d7deeb; }
+body[data-theme="light"] .workspaceStats div { background: #ffffff; border-color: #d7deeb; }
 body[data-theme="light"] .anatomyRoutePanel { background: #f8fafc; border-color: #8eb4d9; }
 body[data-theme="light"] .anatomyRouteFacts span { border-color: #d7deeb; }
 body[data-theme="light"] .anatomyRouteFacts b { color: #182033; }
@@ -838,8 +834,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .brand { padding: 4px 6px 8px; gap: 12px; }
 .brand > span:last-child { display: grid; gap: 1px; }
 .brand small { color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: .02em; }
-.brandMark { width: 40px; height: 40px; flex: 0 0 40px; }
-.brandMark img { width: 40px; height: 40px; display: block; object-fit: cover; border-radius: 8px; }
+.brandMark { width: 44px; height: 44px; flex: 0 0 44px; display: grid; place-items: center; box-sizing: border-box; overflow: hidden; }
+.brandMark img { width: 40px; height: 37px; display: block; margin: auto; object-fit: contain; object-position: 50% 52%; border-radius: 7px; }
 .rail nav { display: grid; gap: 20px; }
 .navGroup { display: grid; gap: 5px; }
 .navGroupLabel { padding: 0 10px 5px; color: #7890ad; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .11em; }
@@ -1124,3 +1120,166 @@ body[data-theme="light"] .libraryManage[open] > button { background: #fff1f2; }
   .modelSlotGrid { grid-template-columns: 1fr; }
   .modelJobPicker, .selectedModelFields, .assignmentList { grid-template-columns: 1fr; }
 }
+
+.annotationEllipse,
+.annotationLength { fill: transparent; stroke-width: 2.5; vector-effect: non-scaling-stroke; cursor: pointer; }
+.annotationLength { stroke-linecap: round; }
+.annotationEllipse.selected,
+.annotationLength.selected { stroke-width: 4; }
+.annotationMeasurement { display: block; margin: .35rem 0; color: var(--accent); font-size: .82rem; }
+.readingWorkflowActions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.readingWorkflowActions button { white-space: nowrap; }
+.caseMetadataEditor { border: 1px solid #2b3d57; border-radius: 8px; background: #0b1525; }
+.caseMetadataEditor > summary { cursor: pointer; padding: 9px 10px; color: #c7d5e8; font-size: 12px; font-weight: 750; }
+.caseMetadataEditor[open] > summary { border-bottom: 1px solid #2b3d57; }
+.caseMetadataEditor > small { display: block; padding: 0 10px 10px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.caseMetadataGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px; }
+.caseMetadataGrid label { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 11px; }
+.caseMetadataGrid input, .caseMetadataGrid textarea { min-width: 0; padding: 8px; }
+.caseMetadataGrid textarea { min-height: 58px; }
+.caseMetadataGrid .wideField { grid-column: auto; }
+.annotationValidationLoop { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px; border: 1px solid #2f6f67; border-radius: 8px; background: #0c2928; }
+.annotationValidationLoop > div { display: grid; gap: 3px; }
+.annotationValidationLoop span { color: #b8d5d1; font-size: 11px; line-height: 1.4; }
+.annotationConfidence { padding: 2px 5px; border: 1px solid #2f6f67; border-radius: 5px; color: #8ff2df; font-size: 10px; }
+.annotationConfidence.reviewer { border-color: #53647c; color: #c7d5e8; }
+.annotationConfidence.guidance { border-color: #7c5f16; color: #f8d27a; }
+.annotationQueueControls { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(140px, 1fr); gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #0b1525; }
+.annotationQueueControls label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+.annotationQueueControls select { min-width: 0; }
+.annotationQueueControls .confidenceFilter { grid-column: 1 / -1; }
+.confidenceFilter > span { display: flex; justify-content: space-between; gap: 10px; }
+.confidenceFilter input { width: 100%; padding: 0; accent-color: var(--accent-strong); }
+.annotationQueueCount { color: var(--muted); font-size: 11px; }
+.annotationBatchActions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.annotationBatchActions > span { margin-right: auto; color: var(--muted); font-size: 11px; }
+.libraryOverview { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.libraryOverview h2, .libraryOverview p { margin: 0; }
+.libraryOverview p { margin-top: 4px; color: var(--muted); line-height: 1.45; }
+.caseRow.activeCaseRow { border-color: #2d8f80; box-shadow: inset 3px 0 #2dd4bf; }
+.caseValidationState { justify-self: start; padding-left: 16px; position: relative; }
+.caseValidationState::before { content: ""; position: absolute; left: 1px; top: 4px; width: 7px; height: 7px; border: 1px solid currentColor; border-radius: 50%; }
+.caseValidationState.labelled { color: #74d8c7; }
+.caseValidationState.unlabelled { color: #d8b15c; }
+.validationWorkspace { margin: 14px 0 18px; border: 1px solid var(--border); border-radius: 9px; overflow: clip; scroll-margin-top: 16px; }
+.validationWorkspace > summary { display: flex; align-items: center; gap: 10px; min-height: 62px; padding: 12px 14px; cursor: pointer; list-style: none; background: #0b1627; }
+.validationWorkspace > summary::-webkit-details-marker { display: none; }
+.validationWorkspace > summary > span { display: grid; gap: 3px; }
+.validationWorkspace > summary small { color: var(--muted); font-weight: 500; }
+.validationWorkspace > summary::after { content: "+"; margin-left: auto; color: var(--accent); font-size: 20px; }
+.validationWorkspace[open] > summary::after { content: "−"; }
+.validationWorkspace > .validationPage { border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.caseRegistry { min-width: 0; }
+.caseListViewport { display: grid; gap: 10px; max-height: min(58vh, 720px); overflow-y: auto; overscroll-behavior: contain; padding: 0 5px 5px 0; scrollbar-gutter: stable; }
+.complexFlow { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: #0b1525; }
+.flowLane { display: grid; grid-template-columns: 28px minmax(180px, 1fr) 34px minmax(180px, 1fr); gap: 8px; align-items: stretch; }
+.flowLane > span:first-child { display: grid; place-items: center; color: var(--accent); font-weight: 800; }
+.flowLane .flowNode, .flowLane .flowDecision { display: grid; align-content: center; gap: 3px; min-height: 52px; padding: 9px 11px; border: 1px solid #30435e; border-radius: 7px; background: #111e32; }
+.flowLane .flowDecision { border-style: dashed; border-color: #8b6d2b; background: #251f11; }
+.flowLane small { color: var(--muted); line-height: 1.35; }
+.flowLane .flowArrow { display: grid; place-items: center; font-size: 20px; }
+.flowLane .loopArrow { color: #d8b15c; }
+.flowLane .finalNode { border-color: #2f6f67; background: #0c2928; }
+.preferencePresets { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(3, auto); gap: 8px; align-items: center; margin: 16px 0 4px; padding: 10px; border: 1px solid #31415f; border-radius: 8px; }
+.preferencePresets > span { display: grid; gap: 2px; }
+.preferencePresets small, .advancedPreferenceGrid label small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.advancedPreferenceGrid label { align-self: stretch; }
+
+/* Light theme: clinical contrast and a quieter, solid canvas. */
+body[data-theme="light"] {
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --panel-raised: #ffffff;
+  --border: #cfd8e3;
+  --text: #142033;
+  --muted: #4d6078;
+  background: #f4f6f8;
+  color: var(--text);
+}
+body[data-theme="light"] main { background: #f4f6f8; }
+body[data-theme="light"] h3 { color: #40536b; }
+body[data-theme="light"] button { background: #f8fafc; border-color: #b9c6d5; color: #203149; }
+body[data-theme="light"] button:hover:not(:disabled) { background: #edf2f6; border-color: #8fa1b5; }
+body[data-theme="light"] button.primaryAction { background: #0f766e; border-color: #0b625c; color: #ffffff; }
+body[data-theme="light"] button.primaryAction:hover:not(:disabled) { background: #0b625c; }
+body[data-theme="light"] input,
+body[data-theme="light"] select,
+body[data-theme="light"] textarea { background: #ffffff; border-color: #aebdcd; color: #142033; }
+body[data-theme="light"] input::placeholder,
+body[data-theme="light"] textarea::placeholder { color: #6f8094; opacity: 1; }
+body[data-theme="light"] .rail { background: #eef2f5; border-color: #cbd5df; }
+body[data-theme="light"] .brand { color: #10243b; }
+body[data-theme="light"] .brandMark { width: 48px; height: 48px; flex-basis: 48px; padding: 4px; border: 1px solid #aebdcd; border-radius: 9px; background: #ffffff; box-shadow: 0 2px 6px rgba(18, 38, 58, .09); }
+body[data-theme="light"] .brandMark img { width: 39px; height: 36px; margin: auto; object-fit: contain; object-position: 50% 52%; border-radius: 5px; filter: saturate(1.08) contrast(1.08); }
+body[data-theme="light"] .brand small,
+body[data-theme="light"] .navGroupLabel { color: #50657d; }
+body[data-theme="light"] .rail nav button { color: #344a62; }
+body[data-theme="light"] .rail nav button:hover { background: #e1e8ee; color: #142033; }
+body[data-theme="light"] .rail nav button.active { background: #dcefeb; color: #0b5f58; border-color: #75b8ae; box-shadow: inset 3px 0 #0f766e; }
+body[data-theme="light"] .railSafety { background: #ffffff; border-color: #c5d1dc; color: #40566e; }
+body[data-theme="light"] .status.online { background: #e1f2ed; border-color: #74ad9e; color: #0b514b; }
+body[data-theme="light"] .status.offline { background: #fff0f1; border-color: #d49a9f; color: #822a33; }
+body[data-theme="light"] .panel,
+body[data-theme="light"] .metric { box-shadow: 0 1px 2px rgba(18, 38, 58, .04); }
+body[data-theme="light"] .readingWorkflow,
+body[data-theme="light"] .guidedAction,
+body[data-theme="light"] .caseMetadataEditor,
+body[data-theme="light"] .advancedOptions,
+body[data-theme="light"] .caseDetails,
+body[data-theme="light"] .toolbar,
+body[data-theme="light"] .secondaryToolSelect,
+body[data-theme="light"] .complexFlow,
+body[data-theme="light"] .validationWorkspace > summary { background: #f8fafb; border-color: #cbd6e0; }
+body[data-theme="light"] .guidedActionHeader > span,
+body[data-theme="light"] .guideSummaryNumber { background: #0f6f78; color: #ffffff; }
+body[data-theme="light"] .readingWorkflowIdentity small,
+body[data-theme="light"] .inlineSuccess { color: #0b655e; }
+body[data-theme="light"] .readingSteps > button { color: #53667c; }
+body[data-theme="light"] .readingSteps > button.done,
+body[data-theme="light"] .readingSteps > button.current { color: #142033; }
+body[data-theme="light"] .readingSteps > button.current { background: #e6f2ef; }
+body[data-theme="light"] .drop { background: #f5f8fa; border-color: #7796b1; color: #294a67; }
+body[data-theme="light"] .annotationValidationLoop { background: #e6f3f0; border-color: #75b8ae; }
+body[data-theme="light"] .annotationValidationLoop span { color: #345b57; }
+body[data-theme="light"] .annotationConfidence { color: #0b655e; border-color: #6eaaa1; }
+body[data-theme="light"] .annotationConfidence.reviewer { color: #40536b; border-color: #9aabbd; }
+body[data-theme="light"] .annotationConfidence.guidance { color: #76520a; border-color: #c39b45; }
+body[data-theme="light"] .annotationQueueControls { background: #f8fafb; border-color: #cbd6e0; }
+body[data-theme="light"] .annotationQueueControls label,
+body[data-theme="light"] .annotationQueueCount,
+body[data-theme="light"] .annotationBatchActions > span { color: #4d6078; }
+body[data-theme="light"] .annotationCard span,
+body[data-theme="light"] .annotationCard small,
+body[data-theme="light"] .caseMetadataEditor > small,
+body[data-theme="light"] .caseMetadataGrid label { color: #4d6078; }
+body[data-theme="light"] .flowLane .flowNode { background: #ffffff; border-color: #b9c8d6; }
+body[data-theme="light"] .flowLane .flowDecision { background: #fff7df; border-color: #b68a2d; }
+body[data-theme="light"] .flowLane .finalNode { background: #e6f3f0; border-color: #75b8ae; }
+body[data-theme="light"] .preferencePresets { background: #f8fafb; border-color: #cbd6e0; }
+
+@media (max-width: 900px) {
+  .readingWorkflowActions { justify-content: flex-start; flex-wrap: wrap; }
+  .preferencePresets { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .preferencePresets > span { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  .caseMetadataGrid, .flowLane { grid-template-columns: 1fr; }
+  .caseMetadataGrid .wideField { grid-column: auto; }
+  .flowLane > span:first-child, .flowLane .flowArrow { display: none; }
+  .annotationValidationLoop, .libraryOverview { grid-template-columns: 1fr; display: grid; }
+  .preferencePresets { grid-template-columns: 1fr; }
+}
+.dicomViewerControls,
+.libraryTabs,
+.advancedPreferenceGrid,
+.aboutFacts { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.dicomViewerControls { padding: .65rem .8rem; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel-soft); }
+.dicomViewerControls label { display: flex; gap: .4rem; align-items: center; font-size: .78rem; }
+.dicomViewerControls input[type="number"] { width: 6rem; }
+.libraryTabs { margin-bottom: 1rem; border-bottom: 1px solid var(--line); }
+.libraryTabs button { border-radius: .45rem .45rem 0 0; }
+.libraryTabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.advancedPreferenceGrid { align-items: flex-end; }
+.advancedPreferenceGrid label { min-width: 12rem; flex: 1 1 12rem; }
+.aboutFacts > div { display: grid; gap: .25rem; padding: .8rem; border: 1px solid var(--line); border-radius: .65rem; }

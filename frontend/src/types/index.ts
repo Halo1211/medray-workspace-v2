@@ -26,6 +26,7 @@ export type Annotation = {
   } | null;
   source_image_id?: string;
   source_image_index?: number;
+  source_frame_number?: number;
   source_view?: string;
   source_series_id?: string;
   revision_history?: { action: string; timestamp: string; actor: string; note: string }[];
@@ -156,6 +157,21 @@ export type DicomSafetyReport = {
   dicomweb_status: string;
 };
 
+export type DicomViewerProfile = {
+  schema_version: string;
+  number_of_frames: number;
+  rows: number;
+  columns: number;
+  photometric_interpretation: string;
+  modality: string;
+  pixel_spacing: { row_mm: number; column_mm: number } | null;
+  window_presets: { name: string; center: number; width: number }[];
+  default_window: { name: string; center: number; width: number } | null;
+  orientation: number[];
+  frame_of_reference_uid: string;
+  supports_window_level: boolean;
+};
+
 export type AnalysisResult = {
   case_id: string;
   input: Record<string, unknown>;
@@ -166,7 +182,7 @@ export type AnalysisResult = {
   differential_diagnosis: DifferentialCandidate[];
   anatomy_route?: AnatomyRoute;
   systematic_reading: Record<string, unknown> & { confidence?: number };
-  report: { indication: string; technique: string; comparison: string; findings: string; impression: string; recommendation: string; watermark: string };
+  report: { indication: string; technique: string; comparison: string; findings: string; impression: string; recommendation: string; language?: "id" | "en"; watermark: string };
   model_trace: { stage: string; backend: string; model: string; status: string; detail: string }[];
   input_hashes?: Record<string, { algorithm?: string; digest?: string; bytes?: number; status?: string; path?: string }>;
   runtime_snapshot?: Record<string, unknown>;
@@ -218,7 +234,16 @@ export type RuntimeConfig = {
   classification_model: string;
   segmentation_model: string;
   grounding_model: string;
+  review_depth: "focused" | "balanced" | "thorough";
   localization_confidence_threshold: number;
+  annotation_auto_accept_threshold: number;
+  temperature: number;
+  top_p: number;
+  seed: number;
+  max_output_tokens: number;
+  request_timeout_seconds: number;
+  max_retries: number;
+  download_connections: number;
   chest_xray_model: string;
   msk_xray_model: string;
   abdomen_xray_model: string;
@@ -230,6 +255,13 @@ export type RuntimeConfig = {
   ollama_base_url: string;
   allow_cloud: boolean;
   cpu_only: boolean;
+  task_connections?: Partial<Record<"vision" | "chat" | "report", {
+    backend: string;
+    base_url: string;
+    model: string;
+    allow_cloud: boolean;
+    provider?: string;
+  }>>;
 };
 
 export type DatabaseLocation = {
@@ -265,6 +297,11 @@ export type DownloadJob = {
   speed?: string;
   eta?: string;
   accept_ranges?: boolean;
+  transfer_mode?: "single" | "segmented" | string;
+  connections_requested?: number;
+  connections_used?: number;
+  checksum_sha256?: string;
+  checksum_status?: "not_requested" | "pending" | "verified" | "mismatch" | string;
   resumable?: boolean;
   retryable?: boolean;
   error?: string;

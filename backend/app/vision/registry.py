@@ -21,31 +21,21 @@ def _string_list(value: Any) -> list[str]:
 
 def list_vision_adapters() -> list[dict[str, Any]]:
     txrv_available, txrv_missing = _available_modules(["torch", "torchxrayvision"])
-    ultralytics_available, ultralytics_missing = _available_modules(["torch", "ultralytics"])
+    from app.ai_setup.service import xray_readiness
+    readiness = xray_readiness()
     adapters = [
         {
             "id": "torchxrayvision:densenet121-res224-all",
             "name": "TorchXRayVision DenseNet-121",
             "task": "CXR multi-label classification",
-            "status": "available" if txrv_available else "missing_optional_dependencies",
-            "available": txrv_available,
+            "status": readiness["status"],
+            "readiness": readiness,
+            "available": readiness["ready_for_inference"],
             "missing_dependencies": txrv_missing,
             "runtime_field": "classification_model",
             "model_card_id": "torchxrayvision:densenet121-res224-all",
-            "install_hint": "Install backend/requirements-optional.txt and use a PyTorch build appropriate for this machine.",
+            "install_hint": "Open AI Setup > My Models > TorchXRayVision setup.",
             "safety_note": "Research-only uncalibrated probabilities; not diagnosis, triage, or localization.",
-        },
-        {
-            "id": "local:reviewed-ultralytics-detector",
-            "name": "Reviewed local Ultralytics MSK detector",
-            "task": "MSK fracture bounding-box localization",
-            "status": "ready_for_local_artifact" if ultralytics_available else "missing_optional_dependencies",
-            "available": False,
-            "missing_dependencies": ultralytics_missing or ["reviewed local .pt artifact"],
-            "runtime_field": "grounding_model",
-            "model_card_id": "local-msk-fracture-detector",
-            "install_hint": "Import a local .pt artifact, complete and human-review its model card, then select its local ID as grounding_model.",
-            "safety_note": "Runs only on MSK-routed studies; boxes are research candidates and need box-level local validation.",
         },
     ]
 
@@ -62,13 +52,13 @@ def list_vision_adapters() -> list[dict[str, Any]]:
                     "id": name,
                     "name": f"Ollama VLM: {name}",
                     "task": "Local Ollama vision-language review",
-                    "status": "available",
-                    "available": True,
+                    "status": "needs_setup",
+                    "available": False,
                     "missing_dependencies": [],
                     "runtime_field": "vision_language_model",
                     "runtime_backend": "ollama",
                     "model_card_id": "ollama-local-vlm",
-                    "install_hint": "Already installed in Ollama. No Python model download required.",
+                    "install_hint": "Detected in Ollama. Open AI Setup > Local AI, select the model and test image review before use. A name or capability tag alone does not establish readiness.",
                     "safety_note": "Uses the selected local Ollama VLM as unvalidated candidate observations; verify clinically.",
                 }
             )

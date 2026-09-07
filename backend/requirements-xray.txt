@@ -1,0 +1,2 @@
+# MedRay's reviewed CPU setup. PyTorch is installed separately from its CPU index.
+torchxrayvision==1.5.4

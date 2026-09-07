@@ -1,5 +1,7 @@
 # Troubleshooting
 
+> Current beginner workflow: **AI Setup** replaces separate Model Finder / Runtime Settings navigation. See [AI Setup and installation alternatives](AI_SETUP.md). The older technical workflows below remain available under **Find Models, My Models, Downloads and AI Preferences**. Downloaded artifacts require review and successful testing before use.
+
 ## The backend is offline
 
 - Start the application with `start_medray_v2.bat` on Windows or `./start_medray_v2.sh` on Linux/macOS.
