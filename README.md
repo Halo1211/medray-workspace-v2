@@ -8,6 +8,7 @@
 
 <p align="center">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-f59e0b">
+  <img alt="Version: 0.2.0-alpha.1" src="https://img.shields.io/badge/version-0.2.0--alpha.1-2dd4bf">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="React 19" src="https://img.shields.io/badge/React-19-149eca">
   <img alt="FastAPI" src="https://img.shields.io/badge/API-FastAPI-009688">
@@ -92,7 +93,7 @@ flowchart TB
 
 Start with **AI Setup** and follow the numbered flow: **1 Choose a goal → 2 Connect or find → 3 Technical test → 4 Use model**. Vision, chat, and report drafting can each use a different tested provider. **X-ray Classifiers** provides a separate guided path for specialist pathology classifiers. Optional discovery, download, and preference controls stay under **Show advanced tools**.
 
-Read the [AI Setup and provider guide](docs/AI_SETUP.md) and [verification/limitations](docs/AI_SETUP_VERIFICATION.md).
+Read the [AI Setup and provider guide](docs/AI_SETUP.md) and [verification and limitations](docs/VERIFICATION.md).
 
 ## Quick start
 
@@ -216,11 +217,13 @@ npm run build
 
 The current verified baseline in this workspace is:
 
-- Backend: **238 passed, 1 skipped**.
-- Frontend: **42 passed**.
+- Backend: **476 passed, 1 skipped**.
+- Frontend: **146 passed**.
 - Production frontend build: **passed**.
 
-External model availability, Ollama behavior, hardware performance, and clinical validity are not established by these tests.
+See [verification and operating limits](docs/VERIFICATION.md) for test coverage, image handling, supported DICOM frames, and external-runtime limitations.
+
+Case edits use server revisions to detect concurrent updates. The Reading Room queues annotation, finding-review, and case-detail saves before export. If a save fails, the draft stays visible and saving/exporting pause until the reviewer explicitly loads the latest saved case. Chat and image additions update the latest case inside short SQLite transactions. Older API clients must send `If-Match` with the case revision to receive the same stale-edit protection.
 
 ## Data, privacy, and security
 
@@ -255,6 +258,7 @@ CODE_OF_CONDUCT.md       Community participation guidelines
 
 - [Documentation index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Verification and operating limits](docs/VERIFICATION.md)
 - [AI Setup and providers](docs/AI_SETUP.md)
 - [Safety and operating limits](docs/SAFETY.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)

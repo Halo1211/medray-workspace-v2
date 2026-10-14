@@ -3,9 +3,11 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+
 from PIL import Image
-from app.config import get_settings
+
 from app.ai_setup.catalog import TXRV_ID
+from app.config import get_settings
 from app.vision.torchxrayvision_classifier import run_torchxrayvision_classifier
 
 

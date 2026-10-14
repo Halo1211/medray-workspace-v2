@@ -55,6 +55,7 @@ data/*.db
 *.gguf
 
 # Logs, editors, and operating-system files
+.notebook/
 *.log
 .DS_Store
 Thumbs.db

@@ -7,12 +7,18 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
+
 from app.ai_setup import service
 from app.ai_setup.catalog import compatibility
-from app.model_finder.providers import load_github_token, load_huggingface_token, model_detail, runtime_local_model_gate_issues
-from app.models.schemas import RuntimeConfig, RuntimeBackend, RuntimeTaskConnection
+from app.model_finder.providers import (
+    load_github_token,
+    load_huggingface_token,
+    model_detail,
+    runtime_local_model_gate_issues,
+)
+from app.models.schemas import RuntimeBackend, RuntimeConfig, RuntimeTaskConnection
 from app.runtime import adapters
-from app.runtime.secrets import provider_key, save_provider_key, safe_error
+from app.runtime.secrets import provider_key, safe_error, save_provider_key
 from app.storage.db import load_runtime_config, save_runtime_config
 
 router = APIRouter(prefix="/ai-setup")
@@ -112,16 +118,29 @@ def github_test(payload: dict):
         return {"ok": False, "detail": safe_error(exc)}
 
 
+@router.get("/provider-key")
+def key_status(base_url: str):
+    endpoint = base_url.strip().rstrip("/")
+    try:
+        adapters.require_allowed_endpoint(endpoint, True)
+    except (ValueError, RuntimeError):
+        raise HTTPException(400, "Enter the provider's valid server URL.") from None
+    return {"configured": bool(provider_key(endpoint))}
+
+
 @router.post("/provider-key")
 def key_save(payload: dict):
+    key = payload.get("key")
+    if not isinstance(key, str):
+        raise HTTPException(400, "The API key must be a string. Use an empty string to remove a saved key.")
     endpoint = str(payload.get("base_url") or "").strip()
     if endpoint:
         try:
             adapters.require_allowed_endpoint(endpoint, True)
         except Exception:
             raise HTTPException(400, "Enter the provider's valid server URL before saving its key.") from None
-    save_provider_key(str(payload.get("key") or ""), endpoint)
-    return {"configured": bool(provider_key())}
+    save_provider_key(key, endpoint)
+    return {"configured": bool(provider_key(endpoint)) if endpoint else bool(provider_key())}
 
 
 @router.get("/compatibility")
@@ -145,9 +164,10 @@ def _connection(payload):
     adapters.require_allowed_endpoint(endpoint, allow_cloud)
     if backend == "ollama" and not adapters.endpoint_is_local(endpoint):
         raise ValueError("Local Ollama setup requires an address on this computer.")
-    model = str(payload.get("model", "")).strip()
-    if not model or len(model) > 300:
+    model = payload.get("model", "")
+    if not isinstance(model, str) or not model.strip() or len(model.strip()) > 300:
         raise ValueError("Select a model first.")
+    model = model.strip()
     language = "id" if payload.get("language") == "id" else "en"
     provider = " ".join(str(payload.get("provider") or "").split())[:80]
     return {"backend": backend, "task": task, "base_url": endpoint, "allow_cloud": allow_cloud, "model": model, "provider": provider, "language": language}
@@ -171,6 +191,7 @@ def _test_connection(test_id, config):
         if config["task"] == "vision":
             import tempfile
             from pathlib import Path
+
             from PIL import Image
             with tempfile.TemporaryDirectory(dir=service.get_settings().cache_dir) as folder:
                 path = Path(folder) / "synthetic.png"
@@ -189,10 +210,14 @@ def _test_connection(test_id, config):
         if not isinstance(output, str) or not output.strip():
             raise ValueError("Invalid response")
         with _test_lock:
-            _tests[test_id].update(status="ready", detail="Selected model and task responded successfully. Research use still requires human verification.")
+            test = _tests.get(test_id)
+            if test is not None:
+                test.update(status="ready", detail="Selected model and task responded successfully. Research use still requires human verification.")
     except Exception as exc:
         with _test_lock:
-            _tests[test_id].update(status="connection_failed", detail=safe_error(exc))
+            test = _tests.get(test_id)
+            if test is not None:
+                test.update(status="connection_failed", detail=safe_error(exc))
 
 
 @router.post("/connection/test")
@@ -271,7 +296,7 @@ def preferences(payload: dict):
         threshold = payload["localization_confidence_threshold"]
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
             raise HTTPException(400, "Localization confidence threshold must be between 0 and 1.")
-    if "review_depth" in payload and payload["review_depth"] not in {"focused", "balanced", "thorough"}:
+    if "review_depth" in payload and (not isinstance(payload["review_depth"], str) or payload["review_depth"] not in {"focused", "balanced", "thorough"}):
         raise HTTPException(400, "Review depth must be focused, balanced, or thorough.")
     current = load_runtime_config(RuntimeConfig().model_dump(mode="json"))
     for field in area_fields & set(payload):

@@ -29,6 +29,7 @@ export const setupApi = {
   testHf: (token: string) => post<{ ok: boolean; detail: string }>("/hf/test", { token }),
   testGitHub: (token: string) => post<{ ok: boolean; detail: string }>("/github/test", { token }),
   saveKey: (key: string, base_url: string) => post<{ configured: boolean }>("/provider-key", { key, base_url }),
+  keyStatus: (base_url: string) => json<{ configured: boolean }>(`/ai-setup/provider-key?base_url=${encodeURIComponent(base_url)}`),
   detail: (source: string, id: string) => json<ModelDetail>(`/ai-setup/compatibility?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`),
   testConnection: (config: Connection) => post<ConnectionTest>("/connection/test", config),
   connectionResult: (id: string) => json<ConnectionTest>(`/ai-setup/connection/test/${id}`),

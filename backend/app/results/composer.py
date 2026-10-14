@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import re
 
-from app.models.schemas import Annotation, AnnotationSource, Finding, ImageQuality, ModelTrace, ResultCard, ResultEvidence
+from app.models.schemas import (
+    Annotation,
+    AnnotationSource,
+    Finding,
+    ImageQuality,
+    ModelTrace,
+    ResultCard,
+    ResultEvidence,
+)
 
 
 def _safe_id(label: str, index: int) -> str:

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "./services/api";
 import { setupApi, canActivate, statusLabel, busyDownload } from "./aiSetupApi";
 import type { SetupOverview, Connection, ConnectionTest, OllamaStatus, ModelDetail, SystemCheck } from "./aiSetupApi";
@@ -33,6 +33,11 @@ export function AISetup({ modelTools, onLater, language = "en" }: { modelTools: 
   const [connectionActivated, setConnectionActivated] = useState(false);
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [key, setKey] = useState("");
+  const [keyConfigured, setKeyConfigured] = useState(false);
+  const connectionVersion = useRef(0);
+  const viewVersion = useRef(0);
+  const runVersion = useRef(0);
+  const keyStatusVersion = useRef(0);
   const [detail, setDetail] = useState<ModelDetail | null>(null);
   const [system, setSystem] = useState<SystemCheck | null>(null);
   const [serverModels, setServerModels] = useState<{ name: string }[]>([]);
@@ -47,22 +52,51 @@ export function AISetup({ modelTools, onLater, language = "en" }: { modelTools: 
     const [overview, downloads] = await Promise.all([setupApi.overview(), api.downloads()]);
     setData(overview); setJobs(downloads);
   }
-  async function run(action: () => Promise<unknown>, message = "") {
+  async function run(action: () => Promise<unknown>, message = "", isCurrent = () => true) {
+    const view = viewVersion.current;
+    const operation = ++runVersion.current;
+    const current = () => view === viewVersion.current && isCurrent();
     setBusy(true); setError(""); setNotice("");
-    try { await action(); if (message) setNotice(message); }
-    catch (exc) { setError(errorText(exc)); }
-    finally { setBusy(false); }
+    try { await action(); if (current() && message) setNotice(message); }
+    catch (exc) { if (current()) setError(errorText(exc)); }
+    finally { if (operation === runVersion.current) setBusy(false); }
+  }
+  function runConnection(action: (current: () => boolean) => Promise<unknown>, message = "") {
+    const version = connectionVersion.current;
+    const current = () => version === connectionVersion.current;
+    return run(() => action(current), message, current);
+  }
+  function resetConnectionContext() {
+    connectionVersion.current++;
+    setTest(null); setConnectionActivated(false); setKey(""); setServerModels([]); setOllama(null);
+  }
+  async function saveConnectionKey(value: string, current: () => boolean) {
+    const status = await setupApi.saveKey(value, connection.base_url);
+    if (!current()) return;
+    keyStatusVersion.current++;
+    setKeyConfigured(status.configured); setKey(""); setTest(null);
+    await refresh();
   }
   useEffect(() => {
     let alive = true;
+    const initialVersion = connectionVersion.current;
     Promise.all([setupApi.overview(), api.downloads()]).then(([overview, downloads]) => {
       if (!alive) return;
       setData(overview); setJobs(downloads);
       setDownloadConnections(overview.runtime.download_connections || 4);
-      setConnection(current => ({ ...current, base_url: overview.runtime.ollama_base_url }));
+      if (connectionVersion.current === initialVersion) setConnection(current => ({ ...current, base_url: overview.runtime.ollama_base_url }));
     }).catch(exc => { if (alive) setError(errorText(exc)); });
-    return () => { alive = false; };
+    return () => { alive = false; connectionVersion.current++; viewVersion.current++; runVersion.current++; };
   }, []);
+  useEffect(() => {
+    const request = ++keyStatusVersion.current;
+    setKeyConfigured(false);
+    if (connection.backend !== "openai-compatible" || !connection.base_url.trim()) return;
+    let alive = true;
+    setupApi.keyStatus(connection.base_url).then(status => { if (alive && request === keyStatusVersion.current) setKeyConfigured(status.configured); })
+      .catch(() => { if (alive && request === keyStatusVersion.current) setKeyConfigured(false); });
+    return () => { alive = false; };
+  }, [connection.backend, connection.base_url]);
   const classifiers = data?.models.filter(model => model.runtime === "TorchXRayVision") || [];
   const xray = classifiers.find(model => model.model_id === selectedClassifierId) || classifiers[0];
   const xrayBusy = classifiers.some(model => ["installing", "downloading", "testing"].includes(model.status));
@@ -83,12 +117,13 @@ export function AISetup({ modelTools, onLater, language = "en" }: { modelTools: 
     return () => { alive = false; window.clearTimeout(timer); };
   }, [test]);
   function choose(next: Tab) {
-    setTab(next); setError(""); setNotice(""); setTest(null); setConnectionActivated(false);
+    viewVersion.current++; runVersion.current++; setBusy(false); resetConnectionContext();
+    setTab(next); setError(""); setNotice("");
     if (advancedTabs.includes(next)) setAdvancedOpen(true);
     if (next === "Local AI") {
       setProviderId("ollama");
       setConnection({ ...initialConnection, base_url: data?.runtime.ollama_base_url || initialConnection.base_url });
-      void run(async () => setOllama(await setupApi.ollama(data?.runtime.ollama_base_url || initialConnection.base_url)));
+      void runConnection(async current => { const result = await setupApi.ollama(data?.runtime.ollama_base_url || initialConnection.base_url); if (current()) setOllama(result); });
     }
     if (next === "Online AI") {
       const provider = providerById("openai");
@@ -96,14 +131,17 @@ export function AISetup({ modelTools, onLater, language = "en" }: { modelTools: 
       setConnection({ backend: provider.backend, provider: provider.name, task: "vision", base_url: provider.baseUrl, model: "", allow_cloud: false });
     }
     if (next === "System Check") void run(async () => setSystem(await setupApi.system()));
-    if (next === "My Models") void run(async () => { await refresh(); setOllama(await setupApi.ollama(data?.runtime.ollama_base_url || initialConnection.base_url)); });
+    if (next === "My Models") void runConnection(async current => { await refresh(); if (!current()) return; const result = await setupApi.ollama(data?.runtime.ollama_base_url || initialConnection.base_url); if (current()) setOllama(result); });
   }
-  function changeConnection(values: Partial<Connection>) { setConnection(current => ({ ...current, ...values })); setTest(null); setConnectionActivated(false); if (values.base_url || values.backend) setServerModels([]); }
+  function changeConnection(values: Partial<Connection>) {
+    connectionVersion.current++; setConnection(current => ({ ...current, ...values })); setTest(null); setConnectionActivated(false); setNotice(""); setError("");
+    if (values.base_url !== undefined || values.backend !== undefined) { setServerModels([]); setOllama(null); setKey(""); setKeyConfigured(false); }
+  }
   function selectProvider(id: string) {
     const provider = providerById(id);
     setProviderId(provider.id);
     changeConnection({ provider: provider.name, backend: provider.backend, base_url: provider.baseUrl, model: "", allow_cloud: false });
-    if (provider.backend === "ollama") void run(async () => setOllama(await setupApi.ollama(provider.baseUrl)));
+    if (provider.backend === "ollama") void runConnection(async current => { const result = await setupApi.ollama(provider.baseUrl); if (current()) setOllama(result); });
   }
   async function xrayAction(action: string) { await setupApi.xray(action, xray?.model_id); await refresh(); }
   async function downloadAction(job: DownloadJob, action: "pause" | "resume" | "cancel" | "retry" | "delete") {
@@ -180,7 +218,7 @@ export function AISetup({ modelTools, onLater, language = "en" }: { modelTools: 
       {connection.backend === "ollama" ? <>
         <p>{copy("Installed", "Terpasang")}: {ollama ? ollama.installed ? copy("Yes", "Ya") : copy("Not detected on PATH", "Tidak ditemukan di PATH") : copy("Not checked", "Belum diperiksa")} · {copy("Running", "Berjalan")}: {ollama ? ollama.running ? copy("Yes", "Ya") : copy("No", "Tidak") : copy("Not checked", "Belum diperiksa")}</p>
         {ollama && !ollama.running && <p>{ollama.installed ? copy("Open the Ollama app, then retry.", "Buka aplikasi Ollama, lalu coba lagi.") : copy("Install or open Ollama, then retry.", "Pasang atau buka Ollama, lalu coba lagi.")} {ollama.detail}</p>}
-        <div className="setupActions"><a href="https://ollama.com/download" target="_blank" rel="noreferrer">{copy("Ollama install guide", "Panduan instalasi Ollama")}</a><button disabled={busy} onClick={() => run(async () => setOllama(await setupApi.ollama(connection.base_url)))}>{copy("Retry / refresh models", "Coba lagi / perbarui model")}</button></div>
+        <div className="setupActions"><a href="https://ollama.com/download" target="_blank" rel="noreferrer">{copy("Ollama install guide", "Panduan instalasi Ollama")}</a><button disabled={busy} onClick={() => runConnection(async current => { const result = await setupApi.ollama(connection.base_url); if (current()) setOllama(result); })}>{copy("Retry / refresh models", "Coba lagi / perbarui model")}</button></div>
         <label>{copy("Installed model", "Model terpasang")}<select value={connection.model} onChange={event => changeConnection({ model: event.target.value })}><option value="">{copy("Select an installed model", "Pilih model yang terpasang")}</option>{ollama?.models.map(model => <option key={model.name} value={model.name}>{model.name}</option>)}</select></label>
         {ollama?.running && !ollama.models.length && <p>{copy("No installed models. Use the Ollama app to download or import a compatible model, then refresh. Image review requires a vision model; MedRay tests it with a synthetic image.", "Belum ada model terpasang. Unduh atau impor model yang kompatibel melalui aplikasi Ollama, lalu perbarui daftar. Tinjau gambar memerlukan model vision dan akan diuji dengan gambar sintetis.")}</p>}
         <details><summary>{copy("Connection address", "Alamat koneksi")}</summary><label>Ollama URL<input value={connection.base_url} onChange={event => changeConnection({ base_url: event.target.value })} /></label></details>
@@ -188,17 +226,17 @@ export function AISetup({ modelTools, onLater, language = "en" }: { modelTools: 
         <p>{copy("Use any server that implements the compatible chat-completions protocol. Image review requires a vision model; report drafting requires structured text output. Test the task you want to use.", "Gunakan server yang mendukung protokol chat-completions kompatibel. Tinjau gambar membutuhkan model vision, sedangkan penyusunan laporan membutuhkan keluaran teks terstruktur. Uji fungsi yang ingin Anda gunakan.")}</p>
         {tab === "Local AI" && <><ol><li>{copy(`Install and open ${selectedProvider.name}.`, `Pasang dan buka ${selectedProvider.name}.`)}</li><li>{copy("Download and load a model that supports the selected task.", "Unduh dan muat model yang mendukung fungsi terpilih.")}</li><li>{copy("Enable its local API server, then click Detect models.", "Aktifkan server API lokal, lalu klik Deteksi model.")}</li></ol></>}
         <label>Server URL<input type="url" value={connection.base_url} onChange={event => changeConnection({ base_url: event.target.value })} placeholder={tab === "Online AI" ? "https://your-provider.example/v1" : "http://127.0.0.1:1234/v1"} /></label>
-        <div className="setupActions"><button disabled={busy || !connection.base_url || (tab === "Online AI" && !connection.allow_cloud)} onClick={() => run(async () => { const result = await setupApi.connectionModels(connection); setServerModels(result.models); setNotice(result.models.length ? result.detail : copy("No models are exposed by this server. Load one in the server application, then retry.", "Server ini belum menyediakan model. Muat model di aplikasi server, lalu coba lagi.")); })}>{copy("Detect models", "Deteksi model")}</button></div>
+        <div className="setupActions"><button disabled={busy || !connection.base_url || (tab === "Online AI" && !connection.allow_cloud)} onClick={() => runConnection(async current => { const result = await setupApi.connectionModels(connection); if (!current()) return; setServerModels(result.models); setNotice(result.models.length ? result.detail : copy("No models are exposed by this server. Load one in the server application, then retry.", "Server ini belum menyediakan model. Muat model di aplikasi server, lalu coba lagi.")); })}>{copy("Detect models", "Deteksi model")}</button></div>
         <label>{copy("Detected models", "Model terdeteksi")}<select value={connection.model} onChange={event => changeConnection({ model: event.target.value })}><option value="">{copy("Choose a model", "Pilih model")}</option>{serverModels.map(model => <option key={model.name} value={model.name}>{model.name}</option>)}</select></label>
         <details><summary>{copy("My provider requires a model name manually", "Provider saya memerlukan nama model manual")}</summary><label>{copy("Model name", "Nama model")}<input value={connection.model} onChange={event => changeConnection({ model: event.target.value })} placeholder={copy("Name shown by your server or provider", "Nama yang ditampilkan server atau provider")} /></label></details>
-        <label>{copy("API key (optional for some local servers)", "API key (opsional untuk beberapa server lokal)")}<input type="password" autoComplete="off" value={key} onChange={event => { setKey(event.target.value); setTest(null); }} placeholder={data?.provider_key_configured ? copy("A key is saved on this computer", "Key tersimpan di komputer ini") : copy("Paste key", "Tempel key")} /></label>
-        <div className="setupActions"><button disabled={busy || !key.trim() || !connection.base_url} onClick={() => run(async () => { await setupApi.saveKey(key, connection.base_url); setKey(""); setTest(null); await refresh(); }, copy("API key saved locally.", "API key disimpan secara lokal."))}>{copy("Save key", "Simpan key")}</button><button disabled={busy || !data?.provider_key_configured} onClick={() => run(async () => { await setupApi.saveKey("", connection.base_url); setKey(""); setTest(null); await refresh(); }, copy("Saved key removed. Keys supplied by the launcher environment must be removed from that environment.", "Key tersimpan telah dihapus. Key dari environment launcher harus dihapus dari environment tersebut."))}>{copy("Disconnect key", "Putuskan key")}</button></div>
+        <label>{copy("API key (optional for some local servers)", "API key (opsional untuk beberapa server lokal)")}<input type="password" autoComplete="off" value={key} onChange={event => { connectionVersion.current++; setKey(event.target.value); setTest(null); }} placeholder={keyConfigured ? copy("A key is saved on this computer", "Key tersimpan di komputer ini") : copy("Paste key", "Tempel key")} /></label>
+        <div className="setupActions"><button disabled={busy || !key.trim() || !connection.base_url} onClick={() => runConnection(current => saveConnectionKey(key, current), copy("API key saved locally.", "API key disimpan secara lokal."))}>{copy("Save key", "Simpan key")}</button><button disabled={busy || !keyConfigured} onClick={() => runConnection(current => saveConnectionKey("", current), copy("Saved key removed. Keys supplied by the launcher environment must be removed from that environment.", "Key tersimpan telah dihapus. Key dari environment launcher harus dihapus dari environment tersebut."))}>{copy("Disconnect key", "Putuskan key")}</button></div>
       </>}
       {tab === "Online AI" && <div className="setupSafety"><p>{copy("Data sent to this provider may leave this computer.", "Data yang dikirim ke provider dapat keluar dari komputer ini.")}</p><label className="setupCheck"><input type="checkbox" checked={connection.allow_cloud} onChange={event => changeConnection({ allow_cloud: event.target.checked })} />{copy("I allow this online provider to receive case data when I use it.", "Saya mengizinkan provider online ini menerima data kasus saat digunakan.")}</label></div>}
       {test && <p role="status"><strong>{statusLabel(test.status, language)}</strong> — {test.detail}</p>}
       <p className="taskAssignmentNote">{activeTaskConnection ? copy(`Currently assigned for this task: ${activeTaskConnection.provider || activeTaskConnection.backend} · ${activeTaskConnection.model}. Activating a replacement changes only ${connection.task}; other task assignments remain active.`, `Saat ini untuk fungsi ini: ${activeTaskConnection.provider || activeTaskConnection.backend} · ${activeTaskConnection.model}. Aktivasi pengganti hanya mengubah ${connection.task}; fungsi lain tetap aktif.`) : copy(`No tested provider is assigned to ${connection.task} yet. Vision, chat, and report can each use a different server.`, `Belum ada provider teruji untuk ${connection.task}. Vision, chat, dan laporan dapat memakai server yang berbeda.`)}</p>
-      <div className="connectionStages"><div><span>3</span><div><b>{copy("Technical test", "Tes teknis")}</b><p>{copy("Uses only a generated test prompt or synthetic image.", "Hanya memakai prompt uji atau gambar sintetis yang dibuat otomatis.")}</p><button disabled={busy || !connection.model || !connection.base_url || !!key || test?.status === "testing" || (tab === "Online AI" && !connection.allow_cloud)} onClick={() => run(async () => setTest(await setupApi.testConnection({ ...connection, language })))}>{copy("Test connection", "Tes koneksi")}</button></div></div>
-        <div><span>4</span><div><b>{copy("Use model", "Gunakan model")}</b><p>{copy("Activation is limited to the task selected above.", "Aktivasi hanya berlaku untuk fungsi yang dipilih di atas.")}</p><button disabled={busy || test?.status !== "ready" || !!key} onClick={() => run(async () => { await setupApi.activateConnection({ ...connection, language }, test!.id); setConnectionActivated(true); await refresh(); }, copy("Model activated for the selected task.", "Model diaktifkan untuk fungsi yang dipilih."))}>{copy("Use model", "Gunakan model")}</button></div></div></div>
+      <div className="connectionStages"><div><span>3</span><div><b>{copy("Technical test", "Tes teknis")}</b><p>{copy("Uses only a generated test prompt or synthetic image.", "Hanya memakai prompt uji atau gambar sintetis yang dibuat otomatis.")}</p><button disabled={busy || !connection.model || !connection.base_url || !!key || test?.status === "testing" || (tab === "Online AI" && !connection.allow_cloud)} onClick={() => runConnection(async current => { const result = await setupApi.testConnection({ ...connection, language }); if (current()) setTest(result); })}>{copy("Test connection", "Tes koneksi")}</button></div></div>
+        <div><span>4</span><div><b>{copy("Use model", "Gunakan model")}</b><p>{copy("Activation is limited to the task selected above.", "Aktivasi hanya berlaku untuk fungsi yang dipilih di atas.")}</p><button disabled={busy || test?.status !== "ready" || !!key} onClick={() => runConnection(async current => { await setupApi.activateConnection({ ...connection, language }, test!.id); if (!current()) return; setConnectionActivated(true); await refresh(); }, copy("Model activated for the selected task.", "Model diaktifkan untuk fungsi yang dipilih."))}>{copy("Use model", "Gunakan model")}</button></div></div></div>
       {!!key && <p>{copy("Save the key before testing.", "Simpan key sebelum menjalankan tes.")}</p>}
     </section>}
     {tab === "Find Models" && <ModelDiscovery language={language} onNavigate={choose} onSelected={value => setDetail(value as unknown as ModelDetail)} onDownloadsChanged={refresh} />}

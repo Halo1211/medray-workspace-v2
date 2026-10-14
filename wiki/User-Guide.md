@@ -14,17 +14,17 @@ The review surface provides image controls, metadata, quality estimates, systema
 
 ### 3. Findings and annotations
 
-Findings and result cards separate observations, candidate diagnoses, confidence, source, and reviewer state. Manual box, point, polygon, ellipse ROI, and length annotations can be created and edited. Use **Ctrl+Z** to undo and **Ctrl+Shift+Z** to redo annotation changes. Lock reviewed geometry to avoid accidental edits. DICOM length and ellipse measurements use Pixel Spacing when available; otherwise they are explicitly reported in `px`/`px²`, never millimetres. Annotation links preserve the source image/frame, finding, report statement, and revision context.
+Findings and result cards separate observations, candidate diagnoses, confidence, source, and reviewer state. Manual box, point, polygon, ellipse ROI, length, and three-point angle annotations can be created and edited. Drag selected measurement endpoints to adjust their geometry. Use **Ctrl+Z** to undo and **Ctrl+Shift+Z** to redo annotation changes, including their evidence links. Lock reviewed geometry to avoid accidental edits. DICOM length and ellipse measurements use Pixel Spacing when available; otherwise they are explicitly reported in `px`/`px²`, never millimetres. Annotation links preserve the source image/frame, finding, report statement, and revision context.
 
 Fallback regions are general review guides. They are not pathology localization.
 
 ### 4. Report and export
 
-Reports can be edited and exported as Markdown, PDF, or JSON. The workspace also supports reviewed PNG output, annotation review packages, and audit JSON bundles. Review every export for identifiers and unsupported claims before sharing.
+Review draft reports and export them as Markdown, PDF, or JSON. The workspace also supports reviewed PNG output, annotation review packages, and audit JSON bundles. DICOM AI analysis and PNG exports use frame 1; annotations on other frames remain in review JSON. Saves complete before export, and a failed save requires loading the latest saved case before exporting. Review every export for identifiers and unsupported claims before sharing.
 
 ## Case Library and Validation
 
-Cases are stored in local SQLite and local case folders. **Cases** and **Validation** are now tabs on the same Case Library page. Search, rename, reopen, or explicitly delete cases in Cases; create reference labels, run agreement checks, inspect failures, and export protocol reports in Validation. **General Settings** can move the database to another folder; the application refuses to overwrite an existing database and requires a restart for a newly selected location.
+Cases are stored in local SQLite and local case folders. Search, rename, reopen, or explicitly delete cases in **Case Library**. Open its **Validation workspace** to create reference labels, run agreement checks, inspect failures, and export protocol reports. **General Settings** can move the database to another folder; the application refuses to overwrite an existing database and requires a restart for a newly selected location.
 
 ## Model downloads
 

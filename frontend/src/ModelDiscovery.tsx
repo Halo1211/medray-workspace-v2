@@ -105,6 +105,7 @@ export function ModelDiscovery({
   const [sortBy, setSortBy] = useState("fit");
   const [authNotice, setAuthNotice] = useState("");
   const detailRef = useRef<HTMLElement>(null);
+  const mounted = useRef(false);
 
   async function refreshHardware() {
     setHardwareBusy(true);
@@ -119,13 +120,14 @@ export function ModelDiscovery({
 
   useEffect(() => {
     let alive = true;
+    mounted.current = true;
     Promise.allSettled([api.hardwareRecommendations(), api.huggingFaceStatus(), api.githubStatus()]).then(results => {
       if (!alive) return;
       if (results[0].status === "fulfilled") setHardware(results[0].value);
       if (results[1].status === "fulfilled") setHfConfigured(results[1].value.configured);
       if (results[2].status === "fulfilled") setGithubConfigured(results[2].value.configured);
     });
-    return () => { alive = false; };
+    return () => { alive = false; mounted.current = false; };
   }, []);
 
   useEffect(() => {
@@ -163,6 +165,7 @@ export function ModelDiscovery({
     setError("");
     try {
       const selected = await api.modelDetail(sourceKey(model, source), String(model.id || model.name || ""), String(model.url || "")) as unknown as DiscoveryDetail;
+      if (!mounted.current) return;
       setDetail(selected);
       onSelected(selected as unknown as Record<string, unknown>);
     } catch (exc) {
@@ -173,12 +176,17 @@ export function ModelDiscovery({
   }
 
   async function queueFile(file: string) {
-    if (!detail || detail.source !== "Hugging Face") return;
+    if (busy || !detail || detail.source !== "Hugging Face") return;
     const repo = detail.id.replace(/^hf:/, "");
     const path = file.split("/").map(encodeURIComponent).join("/");
-    await api.downloadModel(`https://huggingface.co/${repo}/resolve/main/${path}`, downloadFilename(repo, file));
-    await onDownloadsChanged();
-    onNavigate("Downloads");
+    setBusy(true); setError("");
+    try {
+      await api.downloadModel(`https://huggingface.co/${repo}/resolve/main/${path}`, downloadFilename(repo, file));
+      await onDownloadsChanged();
+      if (mounted.current) onNavigate("Downloads");
+    } catch (exc) {
+      if (mounted.current) setError(exc instanceof Error ? exc.message : (isEn ? "Download could not be queued. Please retry." : "Unduhan belum masuk antrean. Coba lagi."));
+    } finally { if (mounted.current) setBusy(false); }
   }
 
   async function updateAccount(action: () => Promise<void>) {

@@ -1,22 +1,31 @@
-from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import ValidationError
 import sqlite3
 
-from app.api.routes import router
-from app.ai_setup.routes import router as setup_router
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+
 from app.ai_setup.local import router as local_setup_router
+from app.ai_setup.routes import router as setup_router
+from app.api.routes import router
 from app.config import get_settings
-from app.storage.db import init_db
 from app.runtime.secrets import safe_error
+from app.storage.db import CaseConflictError, CaseNotFoundError, init_db
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     init_db()
     app = FastAPI(title=settings.app_name, version=settings.app_version)
+
+    @app.exception_handler(CaseConflictError)
+    async def case_conflict(request, exc):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(CaseNotFoundError)
+    async def missing_case(request, exc):
+        return JSONResponse(status_code=404, content={"detail": "Case no longer exists."})
 
     @app.exception_handler(sqlite3.OperationalError)
     async def database_error(request, exc):

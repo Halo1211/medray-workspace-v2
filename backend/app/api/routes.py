@@ -1,28 +1,30 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
-from PIL import UnidentifiedImageError
-from pydicom.errors import InvalidDicomError
-from app.runtime.secrets import safe_error
+from typing import Annotated, Any
 
 from app.anatomy.router import anatomy_profiles, resolve_profile_model, route_study
-from app.annotations.exporter import export_annotated_png, export_annotation_review_package
+from app.annotations.exporter import (
+    export_annotated_png,
+    export_annotation_review_package,
+)
 from app.audit.bundle import export_audit_bundle
 from app.config import database_location_info, get_settings, set_database_folder
-from app.dicom.safety import dicom_safety_report, export_deidentified_dicom, export_deidentified_metadata
+from app.dicom.safety import (
+    dicom_safety_report,
+    export_deidentified_dicom,
+    export_deidentified_metadata,
+)
 from app.dicom.viewer import dicom_viewer_profile, render_dicom_frame
 from app.model_finder.providers import (
     clear_github_token,
     clear_huggingface_token,
     download_manager,
     github_login_status,
-    huggingface_login_status,
     hardware_recommendations,
+    huggingface_login_status,
     import_local_model,
     list_local_model_artifacts,
     list_ollama_models,
@@ -37,15 +39,38 @@ from app.model_finder.providers import (
     search_hugging_face,
 )
 from app.model_registry.cards import list_model_cards
-from app.models.schemas import MAX_POLYGON_VERTICES, CaseRecord, ChatMessage, RuntimeConfig
+from app.models.schemas import (
+    MAX_POLYGON_VERTICES,
+    CaseRecord,
+    ChatMessage,
+    Coordinate,
+    RuntimeConfig,
+)
 from app.pipelines.analysis_pipeline import run_analysis
 from app.reference_catalog import get_reference_catalog
 from app.reports.generator import export_report
-from app.runtime.adapters import chat_response
-from app.services.image_service import image_to_data_url, ingest_upload
-from app.storage.db import clear_case_database, delete_case, get_case, list_cases, load_runtime_config, save_case, save_runtime_config
-from app.studies.images import active_study_image, normalize_case_images, study_image_from_ingest
 from app.results.differential import build_differential_assistance
+from app.runtime.adapters import chat_response
+from app.runtime.secrets import safe_error
+from app.services.image_service import image_to_data_url, ingest_upload
+from app.storage.db import (
+    CaseNotFoundError,
+    clear_case_database,
+    delete_case,
+    get_case,
+    list_cases,
+    load_runtime_config,
+    save_case,
+    save_runtime_config,
+    update_case,
+)
+from app.studies.images import (
+    REVIEW_METADATA_FIELDS,
+    active_study_image,
+    annotation_matches_image,
+    normalize_case_images,
+    study_image_from_ingest,
+)
 from app.validation.workbench import (
     delete_validation_label,
     export_validation_report,
@@ -55,6 +80,10 @@ from app.validation.workbench import (
     write_curated_sample_fixture,
 )
 from app.vision.registry import list_vision_adapters
+from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
+from PIL import UnidentifiedImageError
+from pydicom.errors import InvalidDicomError
 
 router = APIRouter()
 
@@ -93,7 +122,7 @@ def _validate_case_file_paths(case: dict[str, Any]) -> None:
 
 
 def _validate_case_geometry(case: dict[str, Any]) -> None:
-    """Reject oversized polygons before raw case JSON reaches the browser/exporters."""
+    """Validate geometry in every persisted annotation collection."""
     collections: list[Any] = [case.get("annotations")]
     analysis = case.get("analysis") if isinstance(case.get("analysis"), dict) else {}
     collections.append(analysis.get("annotations"))
@@ -107,20 +136,21 @@ def _validate_case_geometry(case: dict[str, Any]) -> None:
             points = coordinate.get("points") if isinstance(coordinate.get("points"), list) else []
             if str(coordinate.get("type") or "") == "polygon" and len(points) > MAX_POLYGON_VERTICES:
                 raise ValueError(f"Polygon coordinates cannot contain more than {MAX_POLYGON_VERTICES} vertices.")
+            states = [annotation]
+            if isinstance(annotation.get("original_state"), dict):
+                states.append(annotation["original_state"])
+            for state in states:
+                for field in ("coordinate", "original_coordinate"):
+                    if field not in state or (field == "original_coordinate" and state[field] is None):
+                        continue
+                    try:
+                        Coordinate.model_validate(state[field])
+                    except ValueError:
+                        raise ValueError("Annotation geometry is invalid. Use finite coordinates and valid dimensions or vertices.") from None
 
 
 def _annotation_matches_image(annotation: dict[str, Any], image: dict[str, Any], first_image: bool = False, images: list[dict[str, Any]] | None = None) -> bool:
-    source_id = str(annotation.get("source_image_id") or "")
-    accepted_ids = {
-        str(image.get("image_id") or ""),
-        str(image.get("sop_instance_uid") or ""),
-    }
-    filename = str(image.get("filename") or "")
-    if filename and sum(1 for item in (images or []) if str(item.get("filename") or "") == filename) == 1:
-        accepted_ids.add(filename)
-    if source_id in {"", "primary"}:
-        return first_image
-    return source_id in accepted_ids
+    return annotation_matches_image(annotation, image, first_image, images)
 
 
 def _dicom_source(case: dict[str, Any], image_id: str) -> tuple[dict[str, Any], Path]:
@@ -138,7 +168,7 @@ def _dicom_source(case: dict[str, Any], image_id: str) -> tuple[dict[str, Any], 
 @router.get("/health")
 def health() -> dict[str, Any]:
     settings = get_settings()
-    return {"ok": True, "app": settings.app_name, "version": settings.app_version, "data_dir": str(settings.data_dir)}
+    return {"ok": True, "service": "medray-v2", "app": settings.app_name, "version": settings.app_version, "data_dir": str(settings.data_dir)}
 
 
 @router.get("/references")
@@ -185,8 +215,13 @@ def validation_curated_sample_fixture() -> dict[str, Any]:
 @router.post("/validation/run")
 def validation_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = payload or {}
-    result = run_validation(payload.get("case_ids") or None)
-    if payload.get("export"):
+    if "export" in payload and not isinstance(payload["export"], bool):
+        raise HTTPException(400, "export must be a boolean.")
+    try:
+        result = run_validation(payload.get("case_ids"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if payload.get("export") is True:
         exported = export_validation_report(result)
         result["export_path"] = exported["path"]
     return result
@@ -198,7 +233,7 @@ def validation_export() -> dict[str, Any]:
 
 
 @router.post("/upload")
-def upload(file: UploadFile = File(...), case_title: str = Form("")) -> dict[str, Any]:
+def upload(file: Annotated[UploadFile, File()], case_title: str = Form("")) -> dict[str, Any]:
     try:
         image = ingest_upload(file)
         study_image = study_image_from_ingest(image, image["case_id"], 0)
@@ -214,8 +249,8 @@ def upload(file: UploadFile = File(...), case_title: str = Form("")) -> dict[str
             images=[study_image],
             active_image_id=study_image["image_id"],
         )
-        save_case(case.model_dump(mode="json"))
-        return {"case": case.model_dump(mode="json"), "image": image, "preview_data_url": image_to_data_url(image["preview_path"])}
+        saved = save_case(case.model_dump(mode="json"))
+        return {"case": saved, "image": image, "preview_data_url": image_to_data_url(image["preview_path"])}
     except (UnidentifiedImageError, InvalidDicomError):
         raise HTTPException(400, "This image or DICOM file is damaged or unsupported. Choose another image, or export it again from the source application.") from None
     except Exception as exc:
@@ -248,38 +283,38 @@ def delete_case_record(case_id: str) -> dict[str, Any]:
 
 
 @router.post("/cases/{case_id}/images")
-def add_case_image(case_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+def add_case_image(case_id: str, file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     case = get_case(case_id)
     if not case:
         raise HTTPException(404, "Case not found")
     try:
-        case = normalize_case_images(case)
         image = ingest_upload(file, case_id=case_id)
-        study_image = study_image_from_ingest(image, case_id, len(case["images"]))
-        case["images"].append(study_image)
-        case = normalize_case_images(case)
-        case["updated_at"] = datetime.now(timezone.utc).isoformat()
-        save_case(case)
+        def append_image(latest):
+            latest = normalize_case_images(latest)
+            latest["images"].append(study_image_from_ingest(image, case_id, len(latest["images"])))
+            return normalize_case_images(latest)
+        case = update_case(case_id, append_image)
         saved_image = case["images"][-1]
         return {"case": case, "image": saved_image}
+    except CaseNotFoundError:
+        raise
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/cases/{case_id}/active-image")
 def set_active_case_image(case_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    case = get_case(case_id)
-    if not case:
-        raise HTTPException(404, "Case not found")
-    case = normalize_case_images(case)
     image_id = str(payload.get("image_id") or "")
-    if not any(str(image.get("image_id")) == image_id for image in case["images"]):
-        raise HTTPException(404, "Study image not found")
-    case["active_image_id"] = image_id
-    case = normalize_case_images(case)
-    case["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_case(case)
-    return case
+    def select_image(case):
+        case = normalize_case_images(case)
+        if not any(str(image.get("image_id")) == image_id for image in case["images"]):
+            raise HTTPException(404, "Study image not found")
+        case["active_image_id"] = image_id
+        # Preserve per-image results before changing the active selection.
+        case["analysis"] = None
+        case["report"] = None
+        return normalize_case_images(case)
+    return update_case(case_id, select_image)
 
 
 @router.get("/dicom/{case_id}/images/{image_id}/safety")
@@ -374,7 +409,7 @@ async def analyze(case_id: str, custom_prompt: str = Form(""), language: str = F
     image = {
         "stored_path": active_image.get("image_path"),
         "preview_path": active_image.get("preview_path"),
-        "metadata": active_image.get("metadata", {}),
+        "metadata": case.get("metadata", {}),
         "filename": active_image.get("filename") or case.get("title"),
         "format": active_image.get("format"),
         "width": active_image.get("width"),
@@ -389,27 +424,26 @@ async def analyze(case_id: str, custom_prompt: str = Form(""), language: str = F
     runtime_snapshot = runtime.model_dump(mode="json")
     report_language = "en" if language == "en" else "id"
     result = await run_analysis(case_id, image, custom_prompt=custom_prompt, backend=runtime.primary_backend.value, runtime_snapshot=runtime_snapshot, language=report_language, anatomy_profile_override=anatomy_profile_override)
-    all_existing_annotations = _list_of_dicts(case.get("annotations"))
-    first_image = bool(case.get("images") and case["images"][0].get("image_id") == active_image.get("image_id"))
-    existing_manual = [
-        annotation
-        for annotation in all_existing_annotations
-        if str(annotation.get("source", "")) == "manual user annotation" and _annotation_matches_image(annotation, active_image, first_image, case.get("images", []))
-    ]
-    other_image_annotations = [annotation for annotation in all_existing_annotations if not _annotation_matches_image(annotation, active_image, first_image, case.get("images", []))]
-    result_annotations = _list_of_dicts(result.get("annotations"))
-    generated_ids = {str(annotation.get("id", "")) for annotation in result_annotations}
-    result_annotations.extend(annotation for annotation in existing_manual if str(annotation.get("id", "")) not in generated_ids)
-    result["annotations"] = result_annotations
-    analyses_by_image = case.get("analyses_by_image") if isinstance(case.get("analyses_by_image"), dict) else {}
-    analyses_by_image[str(active_image["image_id"])] = result
-    case["analyses_by_image"] = analyses_by_image
-    case["analysis"] = result
-    case["annotations"] = [*other_image_annotations, *result["annotations"]]
-    case["report"] = result["report"]
-    case["updated_at"] = datetime.now(timezone.utc).isoformat()
-    case["runtime"] = runtime_snapshot
-    save_case(case)
+    def merge_analysis(latest_case):
+        case = normalize_case_images(latest_case)
+        all_existing_annotations = _list_of_dicts(case.get("annotations"))
+        first_image = bool(case.get("images") and case["images"][0].get("image_id") == active_image.get("image_id"))
+        existing_manual = [
+            annotation for annotation in all_existing_annotations
+            if str(annotation.get("source", "")) == "manual user annotation" and _annotation_matches_image(annotation, active_image, first_image, case.get("images", []))
+        ]
+        other_image_annotations = [annotation for annotation in all_existing_annotations if not _annotation_matches_image(annotation, active_image, first_image, case.get("images", []))]
+        result_annotations = _list_of_dicts(result.get("annotations"))
+        generated_ids = {str(annotation.get("id", "")) for annotation in result_annotations}
+        result_annotations.extend(annotation for annotation in existing_manual if str(annotation.get("id", "")) not in generated_ids)
+        result["annotations"] = result_annotations
+        case["analyses_by_image"][str(active_image["image_id"])] = result
+        case["analysis"] = result
+        case["annotations"] = [*other_image_annotations, *result_annotations]
+        case["report"] = result["report"]
+        case["runtime"] = runtime_snapshot
+        return normalize_case_images(case)
+    update_case(case_id, merge_analysis)
     return result
 
 
@@ -444,12 +478,13 @@ def chat(case_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message") or "")
     language = "id" if payload.get("language") == "id" else "en"
     reply = chat_response(message, history, runtime, case, language=language)
-    case["chat_history"] = _list_of_dicts(case.get("chat_history"))
-    case["chat_history"].append(ChatMessage(role="user", content=message).model_dump(mode="json"))
-    case["chat_history"].append(ChatMessage(role="assistant", content=reply["content"]).model_dump(mode="json"))
-    case["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_case(case)
-    return {"message": case["chat_history"][-1], "backend": reply["backend"], "fallback": reply["fallback"], "history": case["chat_history"]}
+    def append_reply(case):
+        case["chat_history"] = _list_of_dicts(case.get("chat_history"))
+        case["chat_history"].append(ChatMessage(role="user", content=message).model_dump(mode="json"))
+        case["chat_history"].append(ChatMessage(role="assistant", content=reply["content"]).model_dump(mode="json"))
+        return case
+    case = update_case(case_id, append_reply)
+    return {"message": case["chat_history"][-1], "backend": reply["backend"], "fallback": reply["fallback"], "history": case["chat_history"], "revision": case["revision"], "case": normalize_case_images(case)}
 
 
 @router.get("/cases")
@@ -466,10 +501,30 @@ def case_detail(case_id: str) -> dict[str, Any]:
 
 
 @router.post("/cases")
-def save_case_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    if not payload.get("case_id"):
-        raise HTTPException(400, "case_id is required")
+def save_case_payload(payload: dict[str, Any], if_match: Annotated[str | None, Header()] = None) -> dict[str, Any]:
+    try:
+        json.dumps(payload, allow_nan=False)
+    except ValueError:
+        raise HTTPException(400, "Case fields must contain finite numbers, not NaN or Infinity.") from None
+    if not isinstance(payload.get("case_id"), str) or not payload["case_id"].strip():
+        raise HTTPException(400, "case_id must be a nonempty string")
+    if "title" in payload and not isinstance(payload["title"], str):
+        raise HTTPException(400, "title must be a string")
+    expected_revision = None
+    if if_match is not None:
+        token = if_match.strip()
+        if token.startswith('"') and token.endswith('"'):
+            token = token[1:-1]
+        if len(token) > 20 or not token.isascii() or not token.isdecimal():
+            raise HTTPException(400, "If-Match must contain a nonnegative case revision.")
+        expected_revision = int(token)
     incoming_analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else None
+    incoming_metadata = payload.get("metadata")
+    if isinstance(incoming_metadata, dict):
+        payload["reviewer_metadata"] = {key: value for key, value in incoming_metadata.items() if key in REVIEW_METADATA_FIELDS}
+        for image in _list_of_dicts(payload.get("images")):
+            if str(image.get("image_id")) == str(payload.get("active_image_id")):
+                image["metadata"] = dict(incoming_metadata)
     payload = normalize_case_images(payload)
     try:
         _validate_case_file_paths(payload)
@@ -487,8 +542,7 @@ def save_case_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload["analysis"] = incoming_analysis
         payload["report"] = incoming_analysis.get("report")
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_case(payload)
-    return payload
+    return save_case(payload, expected_revision=expected_revision)
 
 
 @router.post("/reports/{case_id}/export")
@@ -496,7 +550,10 @@ def export_case_report(case_id: str, payload: dict[str, str]) -> dict[str, str]:
     case = get_case(case_id)
     if not case:
         raise HTTPException(404, "Case not found")
-    return export_report(case, payload.get("format", "markdown"), payload.get("language", "id"))
+    try:
+        return export_report(case, payload.get("format", "markdown"), payload.get("language", "id"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
 
 
 @router.post("/annotations/{case_id}/export")
@@ -542,8 +599,8 @@ def get_runtime() -> dict[str, Any]:
 def set_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     config = RuntimeConfig(**payload)
     if config.classification_model.startswith("torchxrayvision:"):
-        from app.ai_setup.service import xray_readiness
         from app.ai_setup.catalog import TXRV_ID
+        from app.ai_setup.service import xray_readiness
         if config.classification_model != TXRV_ID or not xray_readiness()["ready_for_inference"]:
             raise HTTPException(400, "Open AI Setup > X-ray Vision and test the supported classifier before activation.")
     gate_issues = runtime_local_model_gate_issues(config.model_dump(mode="json"))
@@ -670,7 +727,7 @@ def local_import(payload: dict[str, str]) -> dict[str, Any]:
 @router.post("/models/download")
 def download(payload: dict[str, Any]) -> dict[str, Any]:
     url = payload.get("url", "")
-    if not url.startswith(("https://", "http://")):
+    if not isinstance(url, str) or not url.startswith(("https://", "http://")):
         raise HTTPException(400, "Only http/https manual downloads are allowed.")
     try:
         runtime = RuntimeConfig(**load_runtime_config(RuntimeConfig().model_dump(mode="json")))
@@ -685,26 +742,32 @@ def downloads() -> list[dict[str, Any]]:
     return download_manager.list()
 
 
+def _download_action_result(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("status") == "not_found":
+        raise HTTPException(404, "Download job not found")
+    return result
+
+
 @router.post("/models/downloads/{job_id}/cancel")
 def cancel_download(job_id: str) -> dict[str, Any]:
-    return download_manager.cancel(job_id)
+    return _download_action_result(download_manager.cancel(job_id))
 
 
 @router.post("/models/downloads/{job_id}/pause")
 def pause_download(job_id: str) -> dict[str, Any]:
-    return download_manager.pause(job_id)
+    return _download_action_result(download_manager.pause(job_id))
 
 
 @router.post("/models/downloads/{job_id}/resume")
 def resume_download(job_id: str) -> dict[str, Any]:
-    return download_manager.resume(job_id)
+    return _download_action_result(download_manager.resume(job_id))
 
 
 @router.post("/models/downloads/{job_id}/retry")
 def retry_download(job_id: str) -> dict[str, Any]:
-    return download_manager.retry(job_id)
+    return _download_action_result(download_manager.retry(job_id))
 
 
 @router.delete("/models/downloads/{job_id}")
 def delete_download(job_id: str) -> dict[str, Any]:
-    return download_manager.delete(job_id)
+    return _download_action_result(download_manager.delete(job_id))

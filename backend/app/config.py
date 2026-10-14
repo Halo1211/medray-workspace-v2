@@ -4,9 +4,11 @@ import time
 from contextlib import closing
 from functools import cached_property, lru_cache
 from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.storage.files import atomic_write_text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_LOCATION_CONFIG = PROJECT_ROOT / ".medray-database-location.json"
@@ -28,7 +30,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="MEDRAY_", extra="ignore")
 
     app_name: str = "MedRay v2"
-    app_version: str = "0.1.0-alpha"
+    app_version: str = "0.2.0-alpha.1"
     host: str = "127.0.0.1"
     port: int = 8765
     data_dir: Path = Field(default=Path(__file__).resolve().parents[2] / "data")
@@ -121,12 +123,10 @@ def set_database_folder(folder: str) -> dict[str, str | bool]:
                     raise TimeoutError("Database backup is busy. Close other database sessions and retry.")
             with closing(sqlite3.connect(current_path, timeout=5)) as source, closing(sqlite3.connect(target_path)) as destination:
                 source.backup(destination, pages=256, progress=check_backup, sleep=0.1)
-        config_tmp = DATABASE_LOCATION_CONFIG.with_name(f"{DATABASE_LOCATION_CONFIG.name}.tmp")
-        config_tmp.write_text(
+        atomic_write_text(
+            DATABASE_LOCATION_CONFIG,
             json.dumps({"database_path": str(target_path)}, indent=2),
-            encoding="utf-8",
         )
-        config_tmp.replace(DATABASE_LOCATION_CONFIG)
     except Exception:
         if copied_existing:
             target_path.unlink(missing_ok=True)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 REFERENCE_CATALOG: dict[str, Any] = {
     "version": "2026-07-11",
     "scope": "Reference map for maturing MedRay v2 from demo prototype toward validated research tooling.",

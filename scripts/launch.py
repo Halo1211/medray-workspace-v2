@@ -2,7 +2,6 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import shutil
 import socket
 import subprocess
@@ -10,6 +9,7 @@ import sys
 import time
 import urllib.request
 import webbrowser
+from pathlib import Path
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +74,7 @@ def stop(process):
         return
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+                       check=False, creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         process.terminate()
     try:
@@ -100,7 +100,7 @@ def main():
         if not (1024 <= args.backend_port <= 65485 and 1024 <= args.frontend_port <= 65515):
             raise RuntimeError("Choose local ports between 1024 and 65485.")
         node = shutil.which("node")
-        if not node or not supported_node(subprocess.run([node, "--version"], capture_output=True, text=True, timeout=5).stdout):
+        if not node or not supported_node(subprocess.run([node, "--version"], capture_output=True, text=True, timeout=5, check=False).stdout):
             raise RuntimeError("Node is missing or too old. Install Node.js 22.12+ or 24 LTS, then run Setup MedRay.")
         cache = ROOT / "data/cache"
         cache.mkdir(parents=True, exist_ok=True)

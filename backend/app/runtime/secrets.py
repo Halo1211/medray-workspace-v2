@@ -1,8 +1,14 @@
 """Credentials live outside runtime snapshots, cases, logs and exports."""
 import json
 import os
+import tempfile
+import threading
 import urllib.error
+
 from app.config import get_settings
+
+_provider_key_lock = threading.RLock()
+_private_replace_lock = threading.Lock()
 
 
 def _provider_key_records() -> dict[str, str]:
@@ -40,6 +46,12 @@ def provider_key(base_url: str | None = None) -> str:
 
 
 def save_provider_key(key: str, base_url: str = "") -> None:
+    # Each update must read the latest records before writing its replacement.
+    with _provider_key_lock:
+        _save_provider_key(key, base_url)
+
+
+def _save_provider_key(key: str, base_url: str) -> None:
     settings = get_settings()
     path = settings.cache_dir / "provider_keys.json"
     legacy_path = settings.cache_dir / "provider_key.json"
@@ -64,12 +76,22 @@ def save_provider_key(key: str, base_url: str = "") -> None:
 
 
 def private_json(path, payload) -> None:
-    temporary = path.with_suffix(".tmp")
-    with open(temporary, "w", encoding="utf-8") as stream:
-        if os.name != "nt":
-            os.chmod(temporary, 0o600)
-        json.dump(payload, stream)
-    temporary.replace(path)
+    from pathlib import Path
+
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            if os.name != "nt":
+                os.chmod(temporary, 0o600)
+            json.dump(payload, stream)
+        # Windows may reject simultaneous replacements of the same target.
+        with _private_replace_lock:
+            temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def safe_error(exc: Exception) -> str:

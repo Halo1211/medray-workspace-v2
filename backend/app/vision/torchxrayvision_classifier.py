@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-import math
 import hashlib
+import math
 from pathlib import Path
 from typing import Any
 
-from app.models.schemas import Finding
-from app.ai_setup.catalog import TXRV_ID, WEIGHTS_SHA256, classifier_recipe, weights_path
+from app.ai_setup.catalog import (
+    TXRV_ID,
+    WEIGHTS_SHA256,
+    classifier_recipe,
+    weights_path,
+)
 from app.config import get_settings
+from app.models.schemas import Finding
 from app.runtime.secrets import safe_error
 
 
@@ -81,8 +86,8 @@ def run_torchxrayvision_classifier(image_path: str | None, model_id: str | None,
             expected_sha256 = WEIGHTS_SHA256 if resolved_model_id == TXRV_ID else recipe["sha256"]
             if digest.hexdigest() != expected_sha256:
                 raise ModelSetupError("Weights integrity check failed. Download the official weights again in AI Setup.")
-        from PIL import Image
         import numpy as np
+        from PIL import Image
         with Image.open(image_path) as source:
             image = np.asarray(source.convert("L"), dtype=np.float32)[None, ...]
         image = xrv.datasets.normalize(image, 255)

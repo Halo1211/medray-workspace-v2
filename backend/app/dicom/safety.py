@@ -15,7 +15,6 @@ from pydicom.uid import generate_uid
 from app.config import get_settings
 from app.storage.db import safe_path_component
 
-
 PHI_REMOVE_KEYWORDS = {
     "PatientBirthDate", "PatientBirthTime", "PatientAddress", "PatientTelephoneNumbers",
     "PatientBirthName", "PatientMotherBirthName", "PatientComments", "CountryOfResidence",

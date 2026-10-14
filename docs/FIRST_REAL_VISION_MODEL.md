@@ -1,13 +1,24 @@
-# First real vision model
+# Set up a chest X-ray classifier
 
-Open **AI Setup → My Models → TorchXRayVision → Continue setup**. MedRay checks dependencies, installs the reviewed CPU recipe where supported, downloads official weights, then loads and tests a synthetic image. After **Ready**, click **Use as classifier**. No adapter ID or filename is required.
+1. Open **AI Setup → X-ray Classifiers**.
+2. Choose a reviewed DenseNet-121 recipe: All-Datasets, NIH ChestX-ray8, CheXpert,
+   or RSNA Pneumonia.
+3. Follow the guided CPU setup or the platform-specific installation guidance.
+4. Download the official weights and run the synthetic load/inference test.
+5. After the model is technically ready, select **Use as classifier**.
 
-See [AI Setup](AI_SETUP.md) for Windows installation, GPU guidance, troubleshooting and alternatives: Ollama and compatible servers for image review, chat and report drafting.
+Each recipe uses pinned official weights with SHA-256 verification. The adapter
+normalizes grayscale input once, center-crops it, and resizes it to 224 × 224.
+Analysis does not silently download missing weights. Missing dependencies,
+changed weights, load failures, and invalid output prevent model readiness.
 
-Only reviewed DenseNet-121 all-datasets weights are supported. Grayscale pixels are normalized once, center-cropped and resized to 224 × 224. Official weights are SHA-256 checked before the upstream loader. Inference does not trigger a hidden weights download. Missing dependencies, invalid weights, load failure and invalid output prevent readiness.
+Classifier scores are uncalibrated research signals. They do not localize lesions,
+segment anatomy, establish a diagnosis, or demonstrate clinical validity. Local
+validation evidence and qualified human review remain necessary.
 
-Classification produces uncalibrated research probabilities. It does not localize lesions, segment anatomy, establish a diagnosis or prove clinical validity. Model cards, validation evidence, human verification and provenance remain. Failed real inference explicitly identifies fallback use and its reason.
+For general image review, chat, and reporting through Ollama or a compatible
+server, follow the [AI Setup guide](AI_SETUP.md). See [verification](VERIFICATION.md)
+for the tested scope.
 
-Advanced/internal ID: `torchxrayvision:densenet121-res224-all`.
-
-Official references: [TorchXRayVision](https://github.com/mlmed/torchxrayvision), [PyTorch installation selector](https://pytorch.org/get-started/locally/).
+References: [TorchXRayVision](https://github.com/mlmed/torchxrayvision) and the
+[PyTorch installation selector](https://pytorch.org/get-started/locally/).

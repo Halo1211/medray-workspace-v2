@@ -3,17 +3,32 @@ import type { AnalysisResult, AnatomyRoute, AnnotationReviewExport, AuditBundle,
 const CONFIGURED_API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8765/api";
 let activeApiBase = CONFIGURED_API_BASE;
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message); this.name = "ApiError"; }
+}
+
 async function tryFetch(url: string, init?: RequestInit, timeoutMs = 5000) {
   const controller = new AbortController();
+  const cancel = () => controller.abort();
+  if (init?.signal?.aborted) throw new Error("Request cancelled.");
+  init?.signal?.addEventListener("abort", cancel, { once: true });
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return { response, body: await response.text() };
   } finally {
     window.clearTimeout(timer);
+    init?.signal?.removeEventListener("abort", cancel);
   }
 }
 
-async function discoverApiBase() {
+function isMedRayHealth(health: unknown): boolean {
+  if (!health || typeof health !== "object") return false;
+  const value = health as Record<string, unknown>;
+  return value.ok === true && (value.service === "medray-v2" || value.app === "MedRay v2");
+}
+
+async function discoverApiBase(signal?: AbortSignal | null) {
   const pageHost = window.location.hostname || "127.0.0.1";
   const alternateHost = pageHost === "localhost" ? "127.0.0.1" : "localhost";
   const candidates = [
@@ -24,13 +39,17 @@ async function discoverApiBase() {
   const failures: string[] = [];
   for (const base of candidates) {
     try {
-      const res = await tryFetch(`${base}/health`, undefined, 1200);
+      const { response: res, body } = await tryFetch(`${base}/health`, { signal }, 1200);
       if (res.ok) {
-        activeApiBase = base;
-        return base;
+        const health: unknown = JSON.parse(body);
+        if (isMedRayHealth(health)) {
+          activeApiBase = base;
+          return base;
+        }
       }
       failures.push(`${base} -> HTTP ${res.status}`);
     } catch {
+      if (signal?.aborted) throw new Error("Request cancelled.");
       failures.push(`${base} -> no response`);
       // keep trying nearby backend ports
     }
@@ -39,27 +58,35 @@ async function discoverApiBase() {
 }
 
 export async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
+  let buffered: Awaited<ReturnType<typeof tryFetch>>;
   const method = String(init?.method || "GET").toUpperCase();
   const retryable = method === "GET" || method === "HEAD" || method === "OPTIONS";
+  const timeout = path === "/ai-setup/local/import" ? 600000 : path.startsWith("/analysis/") || path.startsWith("/chat/") ? 360000 : 30000;
   try {
-    const timeout = path === "/ai-setup/local/import" ? 600000 : path.startsWith("/analysis/") || path.startsWith("/chat/") ? 360000 : 30000;
-    res = await tryFetch(`${activeApiBase}${path}`, init, timeout);
+    buffered = await tryFetch(`${activeApiBase}${path}`, init, timeout);
   } catch {
+    if (init?.signal?.aborted) throw new Error("Request cancelled.");
     if (!retryable) throw new Error("Backend request timed out or failed; the operation was not retried automatically.");
-    const base = await discoverApiBase();
-    res = await tryFetch(`${base}${path}`, init);
+    const base = await discoverApiBase(init?.signal);
+    buffered = await tryFetch(`${base}${path}`, init, timeout);
   }
-  if (!res.ok && path === "/health" && retryable) {
-    const base = await discoverApiBase();
-    res = await tryFetch(`${base}${path}`, init);
+  if (path === "/health" && retryable) {
+    let validHealth = false;
+    if (buffered.response.ok) {
+      try { validHealth = isMedRayHealth(JSON.parse(buffered.body)); } catch { /* invalid health response */ }
+    }
+    if (!validHealth) {
+      const base = await discoverApiBase(init?.signal);
+      buffered = await tryFetch(`${base}${path}`, init, timeout);
+    }
   }
+  const res = buffered.response;
   if (!res.ok) {
     let detail = `Request failed (${res.status}). Please retry.`;
-    try { const body = await res.json(); if (typeof body.detail === "string") detail = body.detail; } catch { /* keep readable fallback */ }
-    throw new Error(detail);
+    try { const body = JSON.parse(buffered.body); if (typeof body.detail === "string") detail = body.detail; } catch { /* keep readable fallback */ }
+    throw new ApiError(detail, res.status);
   }
-  return res.json();
+  return JSON.parse(buffered.body) as T;
 }
 
 export const api = {
@@ -119,10 +146,10 @@ export const api = {
   clearCases: () => json<Record<string, unknown>>("/cases", { method: "DELETE" }),
   saveCase: (payload: CaseRecord) => json<CaseRecord>("/cases", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(payload.revision !== undefined ? { "If-Match": `"${payload.revision}"` } : {}) },
     body: JSON.stringify(payload)
   }),
-  chat: (caseId: string, message: string, language: "id" | "en" = "en") => json<{ history: CaseRecord["chat_history"]; backend: string; fallback: boolean }>(`/chat/${encodeURIComponent(caseId)}`, {
+  chat: (caseId: string, message: string, language: "id" | "en" = "en") => json<{ history: CaseRecord["chat_history"]; backend: string; fallback: boolean; revision?: number; case?: CaseRecord }>(`/chat/${encodeURIComponent(caseId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, language })

@@ -13,7 +13,7 @@ vi.mock("./services/api", () => ({ json: vi.fn(), api: {
   downloadModel: vi.fn(), saveHuggingFaceToken: vi.fn(), clearHuggingFaceToken: vi.fn(),
   saveGithubToken: vi.fn(), clearGithubToken: vi.fn(),
 } }));
-vi.mock("./aiSetupApi", async importOriginal => ({ ...await importOriginal<typeof import("./aiSetupApi")>(), setupApi: { overview: vi.fn(), xray: vi.fn(), ollama: vi.fn(), system: vi.fn(), detail: vi.fn(), testConnection: vi.fn(), connectionModels: vi.fn(), testHf: vi.fn(), testGitHub: vi.fn(), preferences: vi.fn() } }));
+vi.mock("./aiSetupApi", async importOriginal => ({ ...await importOriginal<typeof import("./aiSetupApi")>(), setupApi: { overview: vi.fn(), xray: vi.fn(), ollama: vi.fn(), system: vi.fn(), detail: vi.fn(), testConnection: vi.fn(), connectionModels: vi.fn(), testHf: vi.fn(), testGitHub: vi.fn(), preferences: vi.fn(), keyStatus: vi.fn(), saveKey: vi.fn(), connectionResult: vi.fn(), activateConnection: vi.fn() } }));
 const model = { model_id: "xray", display_name: "TorchXRayVision DenseNet-121", source: "GitHub", runtime: "TorchXRayVision", task: "Classification", status: "dependency_missing", ready_for_inference: false, detail: "PyTorch is missing.", recommended_action: "Continue setup", automatic_cpu_setup: true, artifact_status: "not_downloaded", checks: [{ name: "PyTorch", status: "missing" }] };
 let host: HTMLDivElement, root: Root;
 async function click(text: string) {
@@ -26,6 +26,7 @@ beforeEach(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.mocked(setupApi.overview).mockResolvedValue({ models: [model], runtime: { ollama_base_url: "http://127.0.0.1:11434", review_depth: "balanced" } as never, provider_key_configured: false });
   vi.mocked(api.downloads).mockResolvedValue([]);
+  vi.mocked(setupApi.keyStatus).mockResolvedValue({ configured: false });
   vi.mocked(api.githubStatus).mockResolvedValue({ configured: false } as never);
   vi.mocked(api.huggingFaceStatus).mockResolvedValue({ configured: false } as never);
   vi.mocked(api.hardwareRecommendations).mockResolvedValue({
@@ -40,6 +41,160 @@ beforeEach(async () => {
   vi.mocked(setupApi.ollama).mockResolvedValue({ installed: true, running: true, detail: "Connected", models: [{ name: "local-model", status: "needs_setup", detail: "Test first" }] });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   await act(async () => root.render(<AISetup modelTools={() => <p>Model IDs</p>} onLater={vi.fn()} />));
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+async function changeControl(element: HTMLInputElement | HTMLSelectElement, value: string) {
+  await act(async () => {
+    const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLSelectElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(element, value);
+    element.dispatchEvent(new Event(element instanceof HTMLInputElement ? "input" : "change", { bubbles: true }));
+  });
+}
+
+describe("connection setup regression audit", () => {
+  it("does not use another provider's key status for the selected server", async () => {
+    vi.mocked(setupApi.overview).mockResolvedValue({ models: [], runtime: { ollama_base_url: "http://127.0.0.1:11434" } as never, provider_key_configured: true });
+    await click("Refresh status");
+    await click("Online AI");
+    const disconnect = [...host.querySelectorAll("button")].find(button => button.textContent === "Disconnect key")!;
+    expect(disconnect.disabled).toBe(true);
+    expect(host.querySelector<HTMLInputElement>('input[type="password"]')?.placeholder).toBe("Paste key");
+    expect(setupApi.keyStatus).toHaveBeenCalledWith("https://api.openai.com/v1");
+  });
+
+  it("does not carry an unsaved key to a different provider", async () => {
+    await click("Online AI");
+    await changeControl(host.querySelector<HTMLInputElement>('input[type="password"]')!, "synthetic-key");
+    expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("synthetic-key");
+    await click("Local AI");
+    await click("Online AI");
+    expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("");
+  });
+
+  it("does not let an earlier key status overwrite a successful save", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof setupApi.keyStatus>>>();
+    vi.mocked(setupApi.keyStatus).mockReturnValue(pending.promise);
+    vi.mocked(setupApi.saveKey).mockResolvedValue({ configured: true });
+    await click("Online AI");
+    await changeControl(host.querySelector<HTMLInputElement>('input[type="password"]')!, "synthetic-key");
+    await click("Save key");
+    await act(async () => pending.resolve({ configured: false }));
+    expect([...host.querySelectorAll("button")].find(button => button.textContent === "Disconnect key")!.disabled).toBe(false);
+  });
+
+  it("ignores key status from a previous server", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof setupApi.keyStatus>>>();
+    vi.mocked(setupApi.keyStatus).mockReturnValueOnce(pending.promise).mockResolvedValue({ configured: false });
+    await click("Online AI");
+    await changeControl(host.querySelector<HTMLInputElement>('input[type="url"]')!, "https://other.example/v1");
+    await act(async () => pending.resolve({ configured: true }));
+    expect([...host.querySelectorAll("button")].find(button => button.textContent === "Disconnect key")!.disabled).toBe(true);
+  });
+
+  it("ignores a test result after the task changes", async () => {
+    await click("Local AI");
+    const modelSelect = [...host.querySelectorAll("select")].find(select => [...select.options].some(option => option.value === "local-model"))!;
+    await changeControl(modelSelect, "local-model");
+    const pending = deferred<Awaited<ReturnType<typeof setupApi.testConnection>>>();
+    vi.mocked(setupApi.testConnection).mockReturnValue(pending.promise);
+    await click("Test connection");
+    const taskSelect = [...host.querySelectorAll("select")].find(select => [...select.options].some(option => option.value === "chat"))!;
+    await changeControl(taskSelect, "chat");
+    await act(async () => pending.resolve({ id: "old-test", status: "ready", detail: "OLD TASK SUCCESS" }));
+    expect(host.textContent).not.toContain("OLD TASK SUCCESS");
+    expect([...host.querySelectorAll("button")].find(button => button.textContent === "Use model")!.disabled).toBe(true);
+  });
+
+  it("accepts a successful test when the connection has not changed", async () => {
+    await click("Local AI");
+    const modelSelect = [...host.querySelectorAll("select")].find(select => [...select.options].some(option => option.value === "local-model"))!;
+    await changeControl(modelSelect, "local-model");
+    vi.mocked(setupApi.testConnection).mockResolvedValue({ id: "current-test", status: "ready", detail: "CURRENT TASK SUCCESS" });
+    await click("Test connection");
+    expect(host.textContent).toContain("CURRENT TASK SUCCESS");
+    expect([...host.querySelectorAll("button")].find(button => button.textContent === "Use model")!.disabled).toBe(false);
+  });
+
+  it("accepts model detection for the current server", async () => {
+    await click("Online AI");
+    await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    vi.mocked(setupApi.connectionModels).mockResolvedValue({ models: [{ name: "current-model" }], detail: "CURRENT SERVER SUCCESS" });
+    await click("Detect models");
+    expect(host.querySelector('option[value="current-model"]')).toBeTruthy();
+    expect(host.textContent).toContain("CURRENT SERVER SUCCESS");
+  });
+
+  it("ignores model detection results after the server URL changes", async () => {
+    await click("Online AI");
+    await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    const pending = deferred<Awaited<ReturnType<typeof setupApi.connectionModels>>>();
+    vi.mocked(setupApi.connectionModels).mockReturnValue(pending.promise);
+    await click("Detect models");
+    await changeControl(host.querySelector<HTMLInputElement>('input[type="url"]')!, "https://other.example/v1");
+    await act(async () => pending.resolve({ models: [{ name: "old-server-model" }], detail: "OLD SERVER SUCCESS" }));
+    expect(host.querySelector('option[value="old-server-model"]')).toBeNull();
+    expect(host.textContent).not.toContain("OLD SERVER SUCCESS");
+  });
+
+  it("does not replace an online endpoint when initial overview arrives late", async () => {
+    await act(async () => root.unmount());
+    const pending = deferred<Awaited<ReturnType<typeof setupApi.overview>>>();
+    vi.mocked(setupApi.overview).mockReturnValue(pending.promise);
+    root = createRoot(host);
+    await act(async () => root.render(<AISetup modelTools={() => null} onLater={vi.fn()} />));
+    await click("Online AI");
+    await act(async () => pending.resolve({ models: [], runtime: { ollama_base_url: "http://127.0.0.1:5555" } as never, provider_key_configured: false }));
+    expect(host.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe("https://api.openai.com/v1");
+  });
+
+  async function reviewDownload() {
+    vi.mocked(api.modelSearch).mockResolvedValue({ results: [{ id: "hf:test/model", name: "test/model", source: "Hugging Face" }] });
+    vi.mocked(api.modelDetail).mockResolvedValue({ id: "hf:test/model", name: "test/model", source: "Hugging Face", files: ["model.gguf"], compatibility: { status: "configuration_required", runtime: null, reason: "Test", action: "Connect", model_id: null } });
+    await click("Find Models");
+    await click("Find models");
+    await click("Review compatibility");
+  }
+
+  it("shows a download queue failure and allows retry", async () => {
+    await reviewDownload();
+    vi.mocked(api.downloadModel).mockRejectedValue(new Error("Synthetic download queue error"));
+    await click("Queue download");
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Synthetic download queue error");
+    expect([...host.querySelectorAll("button")].find(button => button.textContent === "Queue download")!.disabled).toBe(false);
+    vi.mocked(api.downloadModel).mockResolvedValue({ id: "retried", status: "queued" } as never);
+    await click("Queue download");
+    expect(api.downloadModel).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain("Downloads store files on this computer");
+  });
+
+  it("blocks duplicate queue clicks while the request is pending", async () => {
+    await reviewDownload();
+    const pending = deferred<Awaited<ReturnType<typeof api.downloadModel>>>();
+    vi.mocked(api.downloadModel).mockReturnValue(pending.promise);
+    await click("Queue download");
+    const button = [...host.querySelectorAll("button")].find(button => button.textContent === "Queue download")!;
+    expect(button.disabled).toBe(true);
+    await click("Queue download");
+    expect(api.downloadModel).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve({ id: "queued", status: "queued" } as never));
+    expect(host.textContent).toContain("Downloads store files on this computer");
+  });
+
+  it("keeps the current page when an earlier download queue finishes", async () => {
+    await reviewDownload();
+    const pending = deferred<Awaited<ReturnType<typeof api.downloadModel>>>();
+    vi.mocked(api.downloadModel).mockReturnValue(pending.promise);
+    await click("Queue download");
+    await click("Local AI");
+    await act(async () => pending.resolve({ id: "queued", status: "queued" } as never));
+    expect(host.querySelector('nav button[aria-current="page"]')?.textContent).toBe("Local AI");
+  });
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); });
 

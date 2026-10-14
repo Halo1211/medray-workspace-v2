@@ -1122,10 +1122,16 @@ body[data-theme="light"] .libraryManage[open] > button { background: #fff1f2; }
 }
 
 .annotationEllipse,
-.annotationLength { fill: transparent; stroke-width: 2.5; vector-effect: non-scaling-stroke; cursor: pointer; }
+.annotationLength,
+.annotationAngle { fill: transparent; stroke-width: 2.5; vector-effect: non-scaling-stroke; cursor: pointer; }
 .annotationLength { stroke-linecap: round; }
 .annotationEllipse.selected,
-.annotationLength.selected { stroke-width: 4; }
+.annotationLength.selected,
+.annotationAngle.selected { stroke-width: 4; }
+.annotationOverlay.drawing .annotationLength,
+.annotationOverlay.drawing .annotationAngle,
+.annotationOverlay.drawing .annotationEllipse,
+.annotationOverlay.drawing .measurementVertex { pointer-events: none; }
 .annotationMeasurement { display: block; margin: .35rem 0; color: var(--accent); font-size: .82rem; }
 .readingWorkflowActions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
 .readingWorkflowActions button { white-space: nowrap; }

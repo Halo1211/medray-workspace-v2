@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from app.config import get_settings
 
 TXRV_ID = "torchxrayvision:densenet121-res224-all"

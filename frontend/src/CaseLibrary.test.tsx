@@ -25,6 +25,7 @@ vi.mock("./services/api", () => ({
 }));
 
 import { CaseLibrary } from "./main";
+import { api } from "./services/api";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -39,9 +40,23 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+  vi.mocked(api.cases).mockReset().mockResolvedValue(cases);
 });
 
 describe("Case Library layout", () => {
+  it("ignores an older search result arriving after the current query", async () => {
+    let finishOld!: (value: typeof cases) => void;
+    vi.mocked(api.cases).mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; })).mockResolvedValueOnce([{ ...cases[0], title: "Current query result" }]);
+    await act(async () => root.render(<CaseLibrary activeCase={null} analysis={null} onOpen={vi.fn()} onDeleted={vi.fn()} onCleared={vi.fn()} />));
+    const input = host.querySelector<HTMLInputElement>(".libraryHeader input")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Current");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => finishOld(cases));
+    expect(host.textContent).toContain("Current query result");
+    expect(host.textContent).not.toContain("Synthetic case 30");
+  });
   it("keeps validation reachable before a paginated long case registry", async () => {
     await act(async () => {
       root.render(<CaseLibrary activeCase={null} analysis={null} onOpen={vi.fn()} onDeleted={vi.fn()} onCleared={vi.fn()} />);

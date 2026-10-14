@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 ANATOMY_PROFILES: dict[str, dict[str, Any]] = {
     "chest": {
         "label": "Chest",

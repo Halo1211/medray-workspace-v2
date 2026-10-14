@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any
 
-from PIL import Image, ImageDraw
-
 from app.config import get_settings
-from app.studies.images import normalize_case_images
+from app.models.schemas import Coordinate
 from app.storage.db import safe_path_component
-
+from app.storage.files import atomic_output_path, atomic_write_text
+from app.studies.images import annotation_matches_image, normalize_case_images
+from PIL import Image, ImageDraw
 
 COLORS = {
     "model-returned coordinate": "#2dd4bf",
@@ -22,7 +23,8 @@ COLORS = {
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else default
     except (TypeError, ValueError):
         return default
 
@@ -88,12 +90,23 @@ def export_annotated_png(
         canvas = img.convert("RGB")
         draw = ImageDraw.Draw(canvas)
         for ann in _list_of_dicts(annotations):
+            # Stored raster images and DICOM ingest previews represent frame 0.
+            if ann.get("source_frame_number", 0) not in (None, 0, "0"):
+                continue
             if not ann.get("visible", True):
                 continue
             if str(ann.get("source") or "") == "fallback heuristic":
                 continue
-            coord = ann.get("coordinate") if isinstance(ann.get("coordinate"), dict) else {}
+            try:
+                coord = Coordinate.model_validate(ann.get("coordinate")).model_dump()
+            except ValueError:
+                # Old case files can predate API geometry validation.
+                continue
             scale_x, scale_y = _coordinate_scale(ann, canvas.width, canvas.height)
+            scaled_values = [coord[key] * scale for key, scale in (("x", scale_x), ("y", scale_y), ("width", scale_x), ("height", scale_y))]
+            scaled_values.extend(value * scale for point in coord["points"] for value, scale in zip(point, (scale_x, scale_y), strict=True))
+            if not all(math.isfinite(value) for value in scaled_values):
+                continue
             color = COLORS.get(ann.get("source"), "#38bdf8")
             if coord.get("type", "bbox") in {"bbox", "grounding_box"}:
                 x = _safe_float(coord.get("x")) * scale_x
@@ -104,7 +117,7 @@ def export_annotated_png(
                     continue
                 draw.rectangle([x, y, x + w, y + h], outline=color, width=3)
                 label = f"{ann.get('label', 'finding')} {_safe_float(ann.get('confidence')):.2f}"
-                draw.rectangle([x, max(0, y - 18), x + min(420, len(label) * 8), y], fill=color)
+                draw.rectangle([x, max(0, y - 18), x + min(420, len(label) * 8), max(0, y)], fill=color)
                 draw.text((x + 4, max(0, y - 16)), label, fill="black")
             elif coord.get("type") == "point":
                 x = _safe_float(coord.get("x")) * scale_x
@@ -147,7 +160,8 @@ def export_annotated_png(
                 for point in points:
                     draw.ellipse([point[0] - 4, point[1] - 4, point[0] + 4, point[1] + 4], fill=color)
                 draw.text((points[0][0] + 5, max(0, points[0][1] - 16)), str(ann.get("label") or coord.get("type")), fill=color)
-        canvas.save(out_path)
+        with atomic_output_path(out_path) as temporary:
+            canvas.save(temporary, format="PNG")
     return str(out_path)
 
 
@@ -196,22 +210,17 @@ def export_annotation_review_package(case: dict[str, Any]) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle = build_annotation_review_bundle(case)
     comparison_path = out_dir / "annotation_review_comparison.json"
-    comparison_path.write_text(json.dumps(bundle, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(comparison_path, json.dumps(bundle, indent=2, ensure_ascii=False, allow_nan=False))
 
     reviewed_pngs: dict[str, str] = {}
     original_pngs: dict[str, str] = {}
     images = case.get("images", [])
     for index, image in enumerate(images):
         image_id = str(image.get("image_id") or f"{case_id}:{index}")
-        accepted_ids = {image_id, str(image.get("sop_instance_uid") or ""), str(image.get("filename") or "")}
         is_primary = index == 0
 
-        def belongs(annotation: dict[str, Any], *, accepted=accepted_ids, primary=is_primary) -> bool:
-            source_id = str(annotation.get("source_image_id") or "")
-            return source_id in accepted or (primary and source_id in {"", "primary"})
-
-        reviewed = [annotation for annotation in bundle["reviewed_annotations"] if belongs(annotation)]
-        originals = [annotation for annotation in bundle["ai_original_annotations"] if belongs(annotation)]
+        reviewed = [annotation for annotation in bundle["reviewed_annotations"] if annotation_matches_image(annotation, image, is_primary, images)]
+        originals = [annotation for annotation in bundle["ai_original_annotations"] if annotation_matches_image(annotation, image, is_primary, images)]
         image_path = str(image.get("image_path") or "")
         image_key = str(index) if len(images) > 1 else ""
         reviewed_pngs[image_id] = export_annotated_png(case_id, image_path, reviewed, "reviewed", image_key)

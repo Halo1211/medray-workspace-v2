@@ -38,3 +38,24 @@ def test_measurement_coordinate_contracts():
         Coordinate(type="length", points=[(1, 2)])
     with pytest.raises(ValidationError):
         Coordinate(type="ellipse", x=1, y=1, width=0, height=2)
+
+
+@pytest.mark.parametrize("kind,points", [
+    ("length", [(1, 2), (1, 2)]),
+    ("angle", [(1, 2), (1, 2), (3, 4)]),
+    ("angle", [(3, 4), (1, 2), (1, 2)]),
+    ("length", [(-1e308, 0), (1e308, 0)]),
+    ("angle", [(-1e308, 0), (1e308, 0), (1e308, 1)]),
+])
+def test_measurement_requires_finite_nonzero_arms(kind, points):
+    with pytest.raises(ValidationError):
+        Coordinate(type=kind, points=points)
+
+
+@pytest.mark.parametrize("points", [
+    [(10, 0), (0, 0), (0, 10)],
+    [(10, 0), (0, 0), (20, 0)],
+    [(10, 0), (0, 0), (-10, 0)],
+])
+def test_angle_accepts_right_zero_and_straight_angles(points):
+    assert Coordinate(type="angle", points=points).points == points

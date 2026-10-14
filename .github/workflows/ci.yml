@@ -8,7 +8,34 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  release:
+    name: Release and documentation checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Check release metadata and documentation links
+        run: python scripts/check_release.py
+
+      - name: Check Markdown formatting
+        run: npm exec --yes --package=markdownlint-cli2@0.23.3 -- markdownlint-cli2 "**/*.md" ".github/**/*.md" "#frontend/node_modules/**" "#node_modules/**" "#.venv/**" "#data/**" "#.notebook/**"
+
   backend:
     name: Backend tests
     strategy:
@@ -51,6 +78,9 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
 
       - name: Run frontend tests
         run: npm test -- --run

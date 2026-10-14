@@ -4,7 +4,6 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-
 VALIDATION_EVIDENCE_FIELDS = [
     "protocol_id",
     "dataset_name",
@@ -37,16 +36,20 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _count(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         parsed = int(value)
+        if isinstance(value, float) and parsed != value:
+            return None
         return parsed if parsed >= 0 else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
 def _summary(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
-        return {str(key): item for key, item in value.items() if _text(item)}
+        return {str(key): item for key, item in value.items() if item is not None and str(item).strip()}
     text = _text(value)
     return {"summary": text} if text else {}
 
@@ -142,8 +145,12 @@ def bind_artifact_identity(value: Any, artifact_path: Path) -> dict[str, Any]:
         selected = candidates[0]
 
     if selected:
+        root = artifact_path.resolve()
+        resolved = selected.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise ValueError("Validation evidence weights_filename must stay inside the local artifact.")
         relative = selected.name if artifact_path.is_file() else selected.relative_to(artifact_path).as_posix()
-        computed = hash_artifact_file(selected)
+        computed = hash_artifact_file(resolved)
         supplied = evidence.get("artifact_hash", "")
         if supplied and supplied != computed:
             raise ValueError("Validation evidence artifact_hash does not match the selected weights file.")

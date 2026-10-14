@@ -14,9 +14,19 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from app.ai_setup.catalog import TXRV_ID, CLASSIFIER_RECIPES, classifier_recipe, weights_path
+from app.ai_setup.catalog import (
+    CLASSIFIER_RECIPES,
+    TXRV_ID,
+    classifier_recipe,
+    weights_path,
+)
 from app.config import PROJECT_ROOT, get_settings
-from app.model_finder.providers import detect_hardware_profile, download_manager, list_local_model_artifacts
+from app.model_finder.providers import (
+    detect_hardware_profile,
+    download_manager,
+    list_local_model_artifacts,
+)
+from app.model_registry.validation_evidence import hash_artifact_file
 from app.models.schemas import RuntimeConfig
 from app.runtime import adapters
 from app.runtime.secrets import private_json, safe_error
@@ -126,7 +136,7 @@ def _run_command(args: list[str], timeout=1200) -> subprocess.CompletedProcess:
     # Keep the child in the same storage context; no patient data is used.
     env["MEDRAY_DATA_DIR"] = str(get_settings().data_dir)
     return subprocess.run(args, cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                          timeout=timeout, check=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
 
 def install_torch() -> None:
@@ -150,7 +160,9 @@ def test_xray(model_id: str = TXRV_ID) -> dict:
     result = _run_command([sys.executable, "-m", "app.ai_setup.worker", "--classifier", model_id], timeout=180)
     try:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
+        if not isinstance(payload, dict):
+            raise TypeError("Model worker output must be an object.")
+    except (ValueError, IndexError, TypeError):
         raise RuntimeError("Model test did not return valid output.") from None
     if result.returncode or payload.get("status") != "ok":
         raise ModelTestError(str(payload.get("detail") or "Model load or test inference failed.")[:600])
@@ -161,14 +173,16 @@ def _setup(action: str, model_id: str = TXRV_ID) -> None:
     recipe = classifier_recipe(model_id)
     model_weights_path = weights_path(model_id)
     try:
-        if action in {"setup", "download"} and model_weights_path.is_file():
-            from app.model_registry.validation_evidence import hash_artifact_file
-            if hash_artifact_file(model_weights_path) != recipe["sha256"]:
-                archive = get_settings().models_dir / ".removed"
-                archive.mkdir(exist_ok=True)
-                if archive.is_symlink():
-                    raise ValueError("Invalid model archive directory.")
-                model_weights_path.rename(archive / (uuid4().hex + "-" + recipe["weights_name"]))
+        if (
+            action in {"setup", "download"}
+            and model_weights_path.is_file()
+            and hash_artifact_file(model_weights_path) != recipe["sha256"]
+        ):
+            archive = get_settings().models_dir / ".removed"
+            archive.mkdir(exist_ok=True)
+            if archive.is_symlink():
+                raise ValueError("Invalid model archive directory.")
+            model_weights_path.rename(archive / (uuid4().hex + "-" + recipe["weights_name"]))
         if action == "setup" and any(item["status"] == "missing" for item in dependencies()):
             write_state(model_id, status="installing", detail="Installing MedRay's official CPU dependencies. This can take several minutes.", passed=False)
             if shutil.disk_usage(get_settings().data_dir).free < 3 * 1024**3:
@@ -177,7 +191,7 @@ def _setup(action: str, model_id: str = TXRV_ID) -> None:
         if action in {"setup", "download"} and not model_weights_path.is_file():
             write_state(model_id, status="downloading", detail="Downloading official model weights. Progress is shown below.", passed=False)
             jobs = [job for job in download_manager.list() if job.get("url") == recipe["url"] and job.get("target_path") == str(model_weights_path)]
-            job = jobs[0] if jobs and jobs[0]["status"] != "completed" else download_manager.start(recipe["url"], recipe["weights_name"])
+            job = jobs[0] if jobs and jobs[0]["status"] != "completed" else download_manager.start(recipe["url"], recipe["weights_name"], checksum_sha256=recipe["sha256"])
             if job["status"] in {"paused", "failed"}:
                 job = download_manager.resume(job["id"])
             elif job["status"] == "cancelled":
@@ -191,6 +205,8 @@ def _setup(action: str, model_id: str = TXRV_ID) -> None:
                 time.sleep(0.3)
             if job["status"] != "completed" or not model_weights_path.is_file():
                 raise RuntimeError("Download interrupted")
+            if hash_artifact_file(model_weights_path) != recipe["sha256"]:
+                raise ModelTestError("Downloaded weights integrity check failed. Retry the official weights download in AI Setup.")
         if action != "download":
             write_state(model_id, status="testing", detail="Loading weights and running a synthetic image through the classifier. No patient data is used.", passed=False)
             test_xray(model_id)
@@ -274,9 +290,9 @@ def system_check() -> dict:
         disk_gb = None
         checks.append({"name": "Storage", "status": "error", "detail": safe_error(exc)})
     try:
-        node = subprocess.run([shutil.which("node") or "node", "--version"], capture_output=True, text=True, timeout=3, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        node = subprocess.run([shutil.which("node") or "node", "--version"], capture_output=True, text=True, timeout=3, check=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         version = node.stdout.strip().lstrip("v").split(".")
-        supported = (int(version[0]) == 22 and int(version[1]) >= 12) or int(version[0]) >= 24
+        supported = node.returncode == 0 and ((int(version[0]) == 22 and int(version[1]) >= 12) or int(version[0]) >= 24)
         checks.append({"name": "Node", "status": "ready" if supported else "needs_setup", "detail": node.stdout.strip() + ("" if supported else ": install Node 22.12+ or 24 LTS")})
     except Exception:
         checks.append({"name": "Node", "status": "unknown", "detail": "Node could not be detected."})

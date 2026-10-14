@@ -1,10 +1,16 @@
 """General local model-file management. Discovery never executes model code."""
-from pathlib import Path
 import shutil
+from pathlib import Path
+from typing import Annotated
 from uuid import uuid4
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
+
 from app.config import get_settings
-from app.model_finder.providers import list_local_model_artifacts, RUNTIME_MODEL_FIELDS
+from app.model_finder.providers import (
+    list_local_model_artifacts,
+    runtime_model_references,
+)
 from app.models.schemas import RuntimeConfig
 from app.runtime.secrets import safe_error
 from app.storage.db import load_runtime_config
@@ -13,7 +19,7 @@ router = APIRouter(prefix="/ai-setup/local")
 
 
 @router.post("/import")
-def import_weights(file: UploadFile = File(...)):
+def import_weights(file: Annotated[UploadFile, File()]):
     # A browser file chooser copies one artifact into a dedicated folder. Never
     # deserialize it, overwrite another model, or use an uploaded filename as a path.
     if Path(file.filename or "").suffix.lower() not in {".pt", ".onnx", ".safetensors", ".gguf", ".bin", ".pth"}:
@@ -48,11 +54,21 @@ def import_weights(file: UploadFile = File(...)):
 def remove(payload: dict):
     model_id = str(payload.get("model_id") or "")
     config = load_runtime_config(RuntimeConfig().model_dump(mode="json"))
-    if any(config.get(field) == model_id for field in RUNTIME_MODEL_FIELDS):
-        raise HTTPException(409, "This model is active. Choose another model before removing it.")
     item = next((item for item in list_local_model_artifacts() if item["id"] == model_id), None)
     if item is None:
         raise HTTPException(404, "Model no longer exists.")
+    artifact_path = Path(item["artifact_path"]).resolve()
+    for _, reference in runtime_model_references(config):
+        if not reference:
+            continue
+        if reference == model_id:
+            raise HTTPException(409, "This model is active. Choose another model before removing it.")
+        try:
+            is_active_path = Path(reference).expanduser().resolve() == artifact_path
+        except (OSError, ValueError):
+            is_active_path = False
+        if is_active_path:
+            raise HTTPException(409, "This model is active. Choose another model before removing it.")
     from app.ai_setup.catalog import WEIGHTS_NAME
     if item["name"] == WEIGHTS_NAME:
         raise HTTPException(409, "Manage the built-in classifier through X-ray Vision setup.")

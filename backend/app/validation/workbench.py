@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat, field_validator, model_validator
 
 from app.config import get_settings
 from app.storage.db import get_case, safe_path_component
-
+from app.storage.files import atomic_write_text
+from app.studies.images import annotation_matches_image, normalize_case_images
 
 VALIDATION_SCHEMA_VERSION = "0.4.0"
 
@@ -40,10 +41,16 @@ class ValidationImageQualityLabel(BaseModel):
 
 
 class ValidationBox(BaseModel):
-    x: float
-    y: float
-    width: float = Field(gt=0)
-    height: float = Field(gt=0)
+    x: FiniteFloat
+    y: FiniteFloat
+    width: FiniteFloat = Field(gt=0)
+    height: FiniteFloat = Field(gt=0)
+
+    @model_validator(mode="after")
+    def finite_endpoints(self) -> ValidationBox:
+        if not math.isfinite(self.x + self.width) or not math.isfinite(self.y + self.height):
+            raise ValueError("Reference boxes require finite endpoints.")
+        return self
 
 
 class ValidationAnnotationExpectation(BaseModel):
@@ -54,8 +61,8 @@ class ValidationAnnotationExpectation(BaseModel):
     min_iou: float = Field(default=0.3, ge=0, le=1)
     note: str = ""
     source_image_id: str = ""
-    points: list[tuple[float, float]] = []
-    max_point_distance: float = Field(default=10, ge=0)
+    points: list[tuple[FiniteFloat, FiniteFloat]] = []
+    max_point_distance: FiniteFloat = Field(default=10, ge=0)
     min_vertex_count: int = Field(default=3, ge=3)
 
 
@@ -85,6 +92,13 @@ class ValidationCaseLabel(BaseModel):
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
+    @field_validator("case_id")
+    @classmethod
+    def nonempty_case_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Reference labels require a nonempty case ID.")
+        return value
+
 
 def validation_dir() -> Path:
     path = get_settings().data_dir / "validation"
@@ -109,7 +123,7 @@ def list_validation_labels() -> list[dict[str, Any]]:
     for path in sorted((validation_dir() / "labels").glob("*.json")):
         try:
             labels.append(ValidationCaseLabel(**json.loads(path.read_text(encoding="utf-8"))).model_dump(mode="json"))
-        except Exception as exc:
+        except (OSError, ValueError, TypeError) as exc:
             labels.append({"case_id": path.stem, "invalid": True, "error": str(exc)})
     return labels
 
@@ -117,11 +131,16 @@ def list_validation_labels() -> list[dict[str, Any]]:
 def save_validation_label(payload: dict[str, Any]) -> dict[str, Any]:
     existing = {}
     if payload.get("case_id") and label_path(str(payload["case_id"])).exists():
-        existing = json.loads(label_path(str(payload["case_id"])).read_text(encoding="utf-8"))
+        try:
+            stored = json.loads(label_path(str(payload["case_id"])).read_text(encoding="utf-8"))
+            existing = stored if isinstance(stored, dict) else {}
+        except (json.JSONDecodeError, UnicodeError):
+            # A valid replacement lets the reviewer repair an invalid label.
+            existing = {}
     merged = {**existing, **payload, "updated_at": now_iso()}
     label = ValidationCaseLabel(**merged)
     path = label_path(label.case_id)
-    path.write_text(json.dumps(label.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(path, json.dumps(label.model_dump(mode="json"), indent=2, ensure_ascii=False))
     return {"path": str(path), "label": label.model_dump(mode="json")}
 
 
@@ -175,7 +194,7 @@ def curated_sample_fixture() -> dict[str, Any]:
 def write_curated_sample_fixture() -> dict[str, Any]:
     fixture = curated_sample_fixture()
     path = fixtures_dir() / "curated_sample_labels.json"
-    path.write_text(json.dumps(fixture, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(path, json.dumps(fixture, indent=2, ensure_ascii=False))
     return {"path": str(path), "fixture": fixture}
 
 
@@ -203,6 +222,7 @@ def _quality_result(label: dict[str, Any], analysis: dict[str, Any]) -> dict[str
     except (TypeError, ValueError):
         predicted_score = None
     if predicted_score is None or not math.isfinite(predicted_score):
+        predicted_score = None
         predicted_quality = "unknown"
     elif predicted_score < 0.3:
         predicted_quality = "non_diagnostic"
@@ -213,7 +233,7 @@ def _quality_result(label: dict[str, Any], analysis: dict[str, Any]) -> dict[str
     return {
         "expected": expected_quality,
         "predicted": predicted_quality,
-        "predicted_score": predicted.get("score"),
+        "predicted_score": predicted_score,
         "predicted_limitations": _string_list(predicted.get("limitations")),
         "expected_limitations": _string_list(expected.get("limitations")),
         "limitation_agreements": limitation_matches,
@@ -222,13 +242,19 @@ def _quality_result(label: dict[str, Any], analysis: dict[str, Any]) -> dict[str
 
 
 def _bbox_iou(first: dict[str, Any], second: dict[str, Any]) -> float:
+    if not all(_geometry_valid({**box, "type": "bbox"}) for box in (first, second)):
+        return 0.0
     ax1, ay1 = float(first.get("x", 0)), float(first.get("y", 0))
     ax2, ay2 = ax1 + float(first.get("width", 0)), ay1 + float(first.get("height", 0))
     bx1, by1 = float(second.get("x", 0)), float(second.get("y", 0))
     bx2, by2 = bx1 + float(second.get("width", 0)), by1 + float(second.get("height", 0))
-    intersection = max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(0.0, min(ay2, by2) - max(ay1, by1))
-    union = max(0.0, (ax2 - ax1) * (ay2 - ay1)) + max(0.0, (bx2 - bx1) * (by2 - by1)) - intersection
-    return intersection / union if union > 0 else 0.0
+    aw, ah = float(first["width"]), float(first["height"])
+    bw, bh = float(second["width"]), float(second["height"])
+    scale_x, scale_y = max(aw, bw), max(ah, bh)
+    # Normalize each axis before multiplying, avoiding area overflow/underflow.
+    intersection = (max(0.0, min(ax2, bx2) - max(ax1, bx1)) / scale_x) * (max(0.0, min(ay2, by2) - max(ay1, by1)) / scale_y)
+    union = (aw / scale_x) * (ah / scale_y) + (bw / scale_x) * (bh / scale_y) - intersection
+    return min(1.0, max(0.0, intersection / union)) if union > 0 else 0.0
 
 
 def _coordinate_points(coordinate: dict[str, Any]) -> list[tuple[float, float]]:
@@ -260,10 +286,13 @@ def _geometry_valid(coordinate: dict[str, Any], min_vertex_count: int = 3) -> bo
             return False
     if coordinate_type == "polygon":
         points = _coordinate_points(coordinate)
-        return len(points) >= min_vertex_count and _polygon_area(points) > 0
+        raw_points = coordinate.get("points")
+        area = _polygon_area(points)
+        return isinstance(raw_points, list) and len(points) == len(raw_points) and len(points) >= min_vertex_count and math.isfinite(area) and area > 0
     if coordinate_type in {"bbox", "grounding_box"}:
         try:
-            return float(coordinate.get("width", 0)) > 0 and float(coordinate.get("height", 0)) > 0
+            x, y, width, height = (float(coordinate.get(key)) for key in ("x", "y", "width", "height"))
+            return all(math.isfinite(value) for value in (x, y, width, height, x + width, y + height)) and width > 0 and height > 0
         except (TypeError, ValueError):
             return False
     return bool(coordinate_type)
@@ -293,16 +322,38 @@ def _case_annotations(case: dict[str, Any], analysis: dict[str, Any] | None = No
     return annotations
 
 
+def _selected_image(label: dict[str, Any], case: dict[str, Any]) -> dict[str, Any] | None:
+    images = _list_of_dicts(case.get("images"))
+    source_id = str(label.get("source_image_id") or "")
+    if source_id:
+        canonical = next((image for image in images if str(image.get("image_id") or "") == source_id), None)
+        if canonical:
+            return canonical
+        aliases = [image for image in images if source_id in {str(image.get("filename") or ""), str(image.get("sop_instance_uid") or "")}]
+        return aliases[0] if len(aliases) == 1 else None
+    index = label.get("source_image_index")
+    if index is not None:
+        return images[index] if isinstance(index, int) and 0 <= index < len(images) else None
+    active_id = str(case.get("active_image_id") or "")
+    return next((image for image in images if str(image.get("image_id") or "") == active_id), images[0] if images else None)
+
+
 def _annotation_result(label: dict[str, Any], case: dict[str, Any], analysis: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     annotations = _case_annotations(case, analysis)
+    images = _list_of_dicts(case.get("images"))
     results = []
     for expected in _list_of_dicts(label.get("expected_annotations")):
-        expected_image_id = str(expected.get("source_image_id") or label.get("source_image_id") or "")
+        selected_image = _selected_image({**label, "source_image_id": expected.get("source_image_id") or label.get("source_image_id") or ""}, case)
+        expected_image_id = str((selected_image or {}).get("image_id") or expected.get("source_image_id") or label.get("source_image_id") or "")
         key = (str(expected.get("label", "")).lower(), str(expected.get("coordinate_type", "")))
         candidates = [
             item for item in annotations
             if (str(item.get("label", "")).lower(), str(item.get("coordinate", {}).get("type", "")) if isinstance(item.get("coordinate"), dict) else "") == key
-            and (not expected_image_id or str(item.get("source_image_id") or "") == expected_image_id)
+            and (
+                annotation_matches_image(item, selected_image, selected_image is images[0], images)
+                if selected_image is not None and images
+                else (not images and (not expected_image_id or str(item.get("source_image_id") or "") == expected_image_id))
+            )
         ]
         reference_box = expected.get("coordinate") if isinstance(expected.get("coordinate"), dict) else None
         expected_points = _coordinate_points({"points": expected.get("points")})
@@ -310,23 +361,26 @@ def _annotation_result(label: dict[str, Any], case: dict[str, Any], analysis: di
         point_spatial = bool(expected_points and key[1] == "point")
         polygon_spatial = key[1] == "polygon"
         spatial_evaluated = box_spatial or point_spatial or polygon_spatial
-        best_iou = max((_bbox_iou(reference_box, item.get("coordinate") if isinstance(item.get("coordinate"), dict) else {}) for item in candidates), default=0.0) if box_spatial else None
+        min_vertex_count = int(expected.get("min_vertex_count", 3))
+        valid_candidates = [item for item in candidates if _geometry_valid(item.get("coordinate") if isinstance(item.get("coordinate"), dict) else {}, min_vertex_count)]
+        best_iou = max((_bbox_iou(reference_box, item["coordinate"]) for item in valid_candidates), default=0.0) if box_spatial else None
         best_point_distance = None
         if point_spatial:
             reference_point = expected_points[0]
             distances = []
-            for item in candidates:
+            for item in valid_candidates:
                 coordinate = item.get("coordinate") if isinstance(item.get("coordinate"), dict) else {}
                 try:
-                    distances.append(math.dist(reference_point, (float(coordinate.get("x")), float(coordinate.get("y")))))
+                    distance = math.dist(reference_point, (float(coordinate.get("x")), float(coordinate.get("y"))))
+                    if math.isfinite(distance):
+                        distances.append(distance)
                 except (TypeError, ValueError):
                     continue
             best_point_distance = min(distances, default=None)
         min_iou = float(expected.get("min_iou", 0.3))
         max_point_distance = float(expected.get("max_point_distance", 10))
-        min_vertex_count = int(expected.get("min_vertex_count", 3))
-        valid_geometry_count = sum(1 for item in candidates if _geometry_valid(item.get("coordinate") if isinstance(item.get("coordinate"), dict) else {}, min_vertex_count))
-        matched = bool(candidates)
+        valid_geometry_count = len(valid_candidates)
+        matched = bool(valid_candidates)
         if box_spatial:
             matched = matched and bool(best_iou is not None and best_iou >= min_iou)
         elif point_spatial:
@@ -389,9 +443,18 @@ def _case_result(label: dict[str, Any]) -> dict[str, Any]:
     case = get_case(label["case_id"])
     if not case:
         return {"case_id": label["case_id"], "title": label.get("title", ""), "status": "skipped_missing_case", "matches": [], "notes": ["Case is not in local library."]}
+    if _list_of_dicts(case.get("images")):
+        case = normalize_case_images(case)
     source_image_id = str(label.get("source_image_id") or "")
+    selected_image = _selected_image(label, case)
+    if selected_image is not None:
+        source_image_id = str(selected_image.get("image_id") or "")
     analyses_by_image = case.get("analyses_by_image") if isinstance(case.get("analyses_by_image"), dict) else {}
     analysis_value = analyses_by_image.get(source_image_id) if source_image_id else case.get("analysis")
+    if selected_image is not None and not analysis_value and source_image_id == str(case.get("active_image_id") or ""):
+        analysis_value = case.get("analysis")
+    if _list_of_dicts(case.get("images")) and selected_image is None:
+        analysis_value = None
     analysis = analysis_value if isinstance(analysis_value, dict) else {}
     if not analysis:
         return {"case_id": label["case_id"], "title": case.get("title") or label.get("title", ""), "status": "skipped_no_analysis", "matches": [], "notes": ["Case has no analysis result yet."]}
@@ -421,7 +484,7 @@ def _case_result(label: dict[str, Any]) -> dict[str, Any]:
         "dataset_name": label.get("dataset_name", "local validation set"),
         "split": label.get("split", "local"),
         "source_image_id": source_image_id or str(case.get("active_image_id") or ""),
-        "source_image_index": label.get("source_image_index"),
+        "source_image_index": case["images"].index(selected_image) if selected_image is not None else label.get("source_image_index"),
         "source_series_id": label.get("source_series_id", ""),
         "source_view": label.get("source_view", ""),
         "status": "evaluated",
@@ -468,10 +531,31 @@ def _runtime_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     return {"backends": backends, "model_refs": model_refs}
 
 
+def _failure_messages(result: dict[str, Any]) -> list[str]:
+    case_id = result.get("case_id")
+    if result.get("status") != "evaluated":
+        return [f"{case_id}: {result.get('status')}"]
+    failures = []
+    for collection, category in (("matches", "finding"), ("result_card_matches", "result card")):
+        for match in _list_of_dicts(result.get(collection)):
+            if match.get("matched") is False:
+                failures.append(f"{case_id}: {category} {match.get('label')} expected {match.get('expected_status')} but got {match.get('predicted_status')}")
+    for field, category in (("body_region", "body region"), ("image_quality", "image quality")):
+        check = result.get(field)
+        if isinstance(check, dict) and check.get("matched") is False:
+            failures.append(f"{case_id}: {category} expected {check.get('expected')} but got {check.get('predicted')}")
+    for check in _list_of_dicts(result.get("annotation_checks")):
+        if check.get("required") and check.get("matched") is False:
+            failures.append(f"{case_id}: missed required localization {check.get('label')}")
+    return failures
+
+
 def run_validation(case_ids: list[str] | None = None) -> dict[str, Any]:
+    if case_ids is not None and (not isinstance(case_ids, list) or not all(isinstance(case_id, str) and case_id.strip() for case_id in case_ids)):
+        raise ValueError("case_ids must be a list of nonempty case ID strings.")
     labels = list_validation_labels()
     valid_labels = [label for label in labels if not label.get("invalid")]
-    if case_ids:
+    if case_ids is not None:
         wanted = set(case_ids)
         valid_labels = [label for label in valid_labels if label["case_id"] in wanted]
     results = [_case_result(label) for label in valid_labels]
@@ -531,20 +615,13 @@ def run_validation(case_ids: list[str] | None = None) -> dict[str, Any]:
         "positive_reference_labels": sum(1 for match in finding_matches if match.get("expected_status") == "positive"),
         "definition": "Reference-positive finding labels without agreement; local research review only.",
     }
-    known_failures = [
-        f"{result.get('case_id')}: {result.get('status')}"
-        for result in results
-        if result.get("status") != "evaluated"
-    ]
-    for result in evaluated:
-        for match in _list_of_dicts(result.get("matches")):
-            if not match.get("matched"):
-                known_failures.append(
-                    f"{result.get('case_id')}: {match.get('label')} expected {match.get('expected_status')} but got {match.get('predicted_status')}"
-                )
-        for check in _list_of_dicts(result.get("annotation_checks")):
-            if check.get("required") and not check.get("matched"):
-                known_failures.append(f"{result.get('case_id')}: missed required localization {check.get('label')}")
+    known_failures = []
+    failure_cases = []
+    for result in results:
+        failures = _failure_messages(result)
+        if failures:
+            failure_cases.append(result)
+            known_failures.extend(failures)
 
     dataset_summary = _dataset_summary(valid_labels, results)
     validation_evidence_draft = {
@@ -580,7 +657,7 @@ def run_validation(case_ids: list[str] | None = None) -> dict[str, Any]:
         "protocol_notes": sorted({str(label.get("protocol_notes")) for label in valid_labels if label.get("protocol_notes")}),
         "runtime_snapshot_summary": _runtime_summary(results),
         "model_card_refs": _runtime_summary(results)["model_refs"],
-        "failure_cases": [result for result in results if result.get("status") != "evaluated"],
+        "failure_cases": failure_cases,
         "metrics": metrics,
         "false_alert_burden": false_alert_burden,
         "missed_reference_summary": missed_reference_summary,
@@ -602,5 +679,5 @@ def export_validation_report(result: dict[str, Any] | None = None) -> dict[str, 
     evidence = report.get("model_card_evidence_draft")
     if isinstance(evidence, dict):
         evidence["report_reference"] = str(path)
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(path, json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False))
     return {"path": str(path), "report": report}

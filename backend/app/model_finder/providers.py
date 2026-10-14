@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
 import hashlib
 import ipaddress
+import json
 import os
 import platform
 import re
-import socket
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -21,15 +21,15 @@ from typing import Any
 from uuid import uuid4
 
 from app.config import get_settings
-from app.models.schemas import ModelMetadata
 from app.model_registry.validation_evidence import (
     bind_artifact_identity,
     normalize_validation_evidence,
     validation_evidence_assessment,
 )
+from app.models.schemas import ModelMetadata
 from app.runtime.adapters import ollama_installed, ollama_tags
-from app.storage.db import list_json, upsert_json
-
+from app.storage.db import list_json, safe_filename_component, upsert_json
+from app.storage.files import atomic_write_text
 
 MEDICAL_HINTS = ["xray", "x-ray", "radiograph", "radiography", "cxr", "chest", "dicom", "chexpert", "mimic-cxr", "nih chest"]
 MODEL_CARD_REQUIREMENTS = [
@@ -302,8 +302,8 @@ def _vram_need_gb(vram: str) -> float | None:
 
 def _search_hardware_profile() -> dict[str, Any]:
     if not hasattr(_search_hardware_profile, "_cached"):
-        setattr(_search_hardware_profile, "_cached", detect_hardware_profile())
-    return getattr(_search_hardware_profile, "_cached")
+        _search_hardware_profile._cached = detect_hardware_profile()
+    return _search_hardware_profile._cached
 
 
 def _hardware_fit_percent(payload: dict[str, Any]) -> tuple[int, str]:
@@ -691,7 +691,7 @@ def _read_local_card(artifact_id: str) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
@@ -772,7 +772,7 @@ def validate_local_model_import(path: str) -> dict[str, Any]:
     scan = _scan_model_files(p)
     missing_fields = [field for field in REQUIRED_LOCAL_CARD_FIELDS if not str((card or {}).get(field) or "").strip()]
     task = str((card or {}).get("task") or infer_task(" ".join([p.name, *scan["files"]])))
-    runtime_eligible = bool(card and card.get("human_reviewed") and not missing_fields)
+    runtime_eligible = bool(card and card.get("human_reviewed") is True and not missing_fields)
     evidence_assessment = validation_evidence_assessment((card or {}).get("validation_evidence"))
     readiness = "ready_for_model_card_review" if scan["likely_model"] else "blocked_missing_model_files"
     if runtime_eligible:
@@ -789,7 +789,7 @@ def validate_local_model_import(path: str) -> dict[str, Any]:
         "runtime_eligible": runtime_eligible,
         "model_card_status": "reviewed" if runtime_eligible else ("incomplete" if card else "missing"),
         "missing_card_fields": missing_fields,
-        "human_review_status": "human_reviewed" if card and card.get("human_reviewed") else "human_review_required",
+        "human_review_status": "human_reviewed" if card and card.get("human_reviewed") is True else "human_review_required",
         "validation_evidence_status": evidence_assessment["status"],
         "validation_evidence_assessment": evidence_assessment,
         "card_path": str(_local_card_path(artifact_id)) if card else "",
@@ -812,7 +812,11 @@ def list_local_model_artifacts() -> list[dict[str, Any]]:
     download_states = _download_state_by_path()
     items = []
     for path in sorted(models_dir.iterdir(), key=lambda item: item.name.lower()):
-        if path.name == "_registry" or path.name.startswith(".") or path.name.endswith(".part"):
+        if path.name == "_registry" or path.name.startswith(".") or path.name.endswith(".part") or re.search(r"\.part\.segment-\d+$", path.name):
+            continue
+        try:
+            _safe_local_model_path(str(path))
+        except (OSError, ValueError):
             continue
         artifact_id = _local_artifact_id(path)
         card = _read_local_card(artifact_id)
@@ -820,7 +824,7 @@ def list_local_model_artifacts() -> list[dict[str, Any]]:
         hints = scan["detected_format_hints"]
         warnings = scan["warnings"]
         files = scan["files"]
-        human_reviewed = bool(card and card.get("human_reviewed"))
+        human_reviewed = bool(card and card.get("human_reviewed") is True)
         missing_fields = [field for field in REQUIRED_LOCAL_CARD_FIELDS if not str((card or {}).get(field) or "").strip()]
         evidence_assessment = validation_evidence_assessment((card or {}).get("validation_evidence"))
         task = str((card or {}).get("task") or infer_task(" ".join([path.name, *files])))
@@ -868,6 +872,8 @@ def list_local_model_artifacts() -> list[dict[str, Any]]:
 
 
 def save_local_model_card(payload: dict[str, Any]) -> dict[str, Any]:
+    if "human_reviewed" in payload and not isinstance(payload["human_reviewed"], bool):
+        raise ValueError("human_reviewed must be an explicit boolean.")
     artifact_id = str(payload.get("artifact_id") or payload.get("id") or "").strip()
     artifact_path = str(payload.get("artifact_path") or "").strip()
     path: Path | None = None
@@ -907,18 +913,28 @@ def save_local_model_card(payload: dict[str, Any]) -> dict[str, Any]:
     card["missing_fields"] = missing
     card_path = _local_card_path(artifact_id)
     card["card_path"] = str(card_path)
-    card_path.write_text(json.dumps(card, indent=2), encoding="utf-8")
+    atomic_write_text(card_path, json.dumps(card, indent=2, allow_nan=False))
     return card
+
+
+def runtime_model_references(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    references = [(field, str(payload.get(field) or "").strip()) for field in RUNTIME_MODEL_FIELDS]
+    connections = payload.get("task_connections")
+    if isinstance(connections, dict):
+        references.extend(
+            (f"task_connections.{task}.model", str(connection.get("model") or "").strip())
+            for task, connection in connections.items() if isinstance(connection, dict)
+        )
+    return references
 
 
 def runtime_local_model_gate_issues(payload: dict[str, Any]) -> list[str]:
     local_items = list_local_model_artifacts()
     eligible_ids = {item["id"] for item in local_items if item.get("runtime_eligible")}
-    eligible_paths = {str(Path(item["artifact_path"]).resolve()) for item in local_items if item.get("runtime_eligible")}
+    eligible_paths = {Path(item["artifact_path"]).resolve() for item in local_items if item.get("runtime_eligible")}
     models_dir = get_settings().models_dir.resolve()
     issues = []
-    for field in RUNTIME_MODEL_FIELDS:
-        value = str(payload.get(field) or "").strip()
+    for field, value in runtime_model_references(payload):
         if not value or value == "disabled" or value.startswith("demo"):
             continue
         if value.startswith("local:") and value not in eligible_ids:
@@ -926,9 +942,9 @@ def runtime_local_model_gate_issues(payload: dict[str, Any]) -> list[str]:
             continue
         try:
             candidate = Path(value).expanduser().resolve()
-        except Exception:
-            continue
-        if (models_dir in candidate.parents or candidate == models_dir) and str(candidate) not in eligible_paths:
+        except (OSError, ValueError):
+            candidate = None
+        if candidate is not None and (models_dir in candidate.parents or candidate == models_dir) and candidate not in eligible_paths:
             issues.append(f"{field}: data/models artifact is review-required and cannot be enabled yet.")
     return issues
 
@@ -946,8 +962,9 @@ def load_huggingface_token() -> str:
     if not path.exists():
         return ""
     try:
-        return str(json.loads(path.read_text(encoding="utf-8")).get("token") or "").strip()
-    except Exception:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
+    except (OSError, ValueError):
         return ""
 
 
@@ -956,8 +973,9 @@ def load_github_token() -> str:
     if not path.exists():
         return ""
     try:
-        return str(json.loads(path.read_text(encoding="utf-8")).get("token") or "").strip()
-    except Exception:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
+    except (OSError, ValueError):
         return ""
 
 
@@ -1401,7 +1419,7 @@ def import_local_model(path: str) -> dict[str, Any]:
         source="local",
         task_type=validation["task"],
         local_path=str(p),
-        status=validation["readiness"],
+        status="installed",
         vram_estimate=estimate_vram(p.name),
     ).model_dump()
     meta = enrich_model(meta, p.name)
@@ -1429,6 +1447,8 @@ class DownloadManager:
             root = get_settings().models_dir.resolve()
             for job in self.jobs.values():
                 if job.get("url") == url and Path(job["target_path"]).parent == root and job.get("status") in {"queued", "downloading", "paused", "pausing"}:
+                    if checksum_sha256 and job.get("checksum_sha256") != checksum_sha256:
+                        raise ValueError("An active download of this URL uses a different checksum. Cancel it before starting a download with this SHA-256 checksum.")
                     return job
             return self._start_locked(url, filename, connections, checksum_sha256)
 
@@ -1479,15 +1499,35 @@ class DownloadManager:
 
     def _target_path(self, url: str, filename: str | None, job_id: str) -> Path:
         raw_name = filename or Path(urllib.parse.urlparse(url).path).name or f"download-{job_id}"
-        safe_name = "".join(ch for ch in raw_name if ch.isalnum() or ch in "._- ")[:160].strip(" .") or f"download-{job_id}"
+        safe_name = safe_filename_component(raw_name, f"download-{job_id}", 160)
         models_dir = get_settings().models_dir.resolve()
         target = (models_dir / safe_name).resolve()
         if models_dir not in target.parents:
             raise ValueError("Download target must stay inside the local models directory.")
         with self.lock:
-            partial = target.with_suffix(target.suffix + ".part")
-            if str(target) in self.reserved_targets or target.exists() or partial.exists():
-                target = target.with_name(f"{target.stem}-{job_id[:8]}{target.suffix}")
+            # A paused segmented transfer may have only .segment-* files.
+            # Persisted jobs also retain their target for a future retry.
+            known_targets = {
+                Path(str(job["target_path"])).resolve()
+                for job in [*list_json("downloads"), *self.jobs.values()]
+                if job.get("target_path")
+            }
+            reserved_paths = {Path(path) for path in self.reserved_targets}
+            original = target
+            suffix = 0
+            while True:
+                partial = target.with_suffix(target.suffix + ".part")
+                if not (
+                    target in reserved_paths
+                    or target in known_targets
+                    or target.exists()
+                    or partial.exists()
+                    or any(partial.parent.glob(partial.name + ".segment-*"))
+                ):
+                    break
+                discriminator = f"-{job_id[:8]}" if suffix == 0 else f"-{job_id[:8]}-{suffix}"
+                target = original.with_name(f"{original.stem}{discriminator}{original.suffix}")
+                suffix += 1
             self.reserved_targets.add(str(target))
         return target
 
@@ -1704,6 +1744,11 @@ class DownloadManager:
         merged.update(self.jobs)
         for job in merged.values():
             worker = self.workers.get(job["id"])
+            if job.get("status") == "completed" and job.get("target_path") and not Path(job["target_path"]).is_file():
+                job["status"] = "failed"
+                job["retryable"] = True
+                job["error"] = "Downloaded model file is missing. Retry to restore it."
+                self._persist(job)
             if job.get("status") in {"queued", "downloading", "pausing", "cancelling"} and not (worker and worker.is_alive()):
                 job["status"] = "paused"
                 job["retryable"] = True
@@ -1712,10 +1757,10 @@ class DownloadManager:
         return sorted(merged.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
-        self.cancel_flags.add(job_id)
         job = self._get_job(job_id)
         if job.get("status") == "not_found":
             return job
+        self.cancel_flags.add(job_id)
         worker = self.workers.get(job_id)
         job["status"] = "cancelling" if worker and worker.is_alive() else "cancelled"
         job["retryable"] = False
@@ -1765,6 +1810,8 @@ class DownloadManager:
                 if worker.is_alive():
                     return job
             self._cleanup_partial(job)
+            self.pause_flags.discard(job_id)
+            self.cancel_flags.discard(job_id)
             job["bytes_read"] = 0
             job["percent"] = 0
             job["speed"] = ""
@@ -1780,6 +1827,8 @@ class DownloadManager:
 
     def delete(self, job_id: str) -> dict[str, Any]:
         job = self._get_job(job_id)
+        if job.get("status") == "not_found":
+            return job
         self.cancel_flags.add(job_id)
         worker = self.workers.get(job_id)
         active = worker and worker.is_alive()

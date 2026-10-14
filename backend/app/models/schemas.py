@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from enum import Enum
-import math
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -42,15 +42,22 @@ class Coordinate(BaseModel):
     coordinate_space: Literal["original_image", "preview_image", "model_input"] = "original_image"
 
     @model_validator(mode="after")
-    def validate_manual_geometry(self) -> "Coordinate":
+    def validate_manual_geometry(self) -> Coordinate:
+        if not all(math.isfinite(value) for value in (self.x, self.y, self.width, self.height)):
+            raise ValueError("Coordinates must be finite.")
+        if self.type in {"bbox", "grounding_box"} and not (
+            self.width > 0 and self.height > 0
+            and math.isfinite(self.x + self.width) and math.isfinite(self.y + self.height)
+        ):
+            raise ValueError("Box coordinates require a finite, positive bounding box.")
         if self.type == "point" and not (math.isfinite(self.x) and math.isfinite(self.y)):
             raise ValueError("Point coordinates must be finite.")
         if self.type == "polygon":
             if len(self.points) < 3 or len(self.points) > MAX_POLYGON_VERTICES or not all(math.isfinite(x) and math.isfinite(y) for x, y in self.points):
                 raise ValueError("Polygon coordinates require at least three finite vertices.")
             area = abs(sum(self.points[index][0] * self.points[(index + 1) % len(self.points)][1] - self.points[(index + 1) % len(self.points)][0] * self.points[index][1] for index in range(len(self.points))) / 2)
-            if area <= 0:
-                raise ValueError("Polygon coordinates require non-zero area.")
+            if not math.isfinite(area) or area <= 0:
+                raise ValueError("Polygon coordinates require finite, non-zero area.")
         if self.type == "ellipse" and not (
             math.isfinite(self.x) and math.isfinite(self.y) and math.isfinite(self.width) and math.isfinite(self.height)
             and self.width > 0 and self.height > 0
@@ -59,6 +66,11 @@ class Coordinate(BaseModel):
         expected_points = 2 if self.type == "length" else 3 if self.type == "angle" else 0
         if expected_points and (len(self.points) != expected_points or not all(math.isfinite(x) and math.isfinite(y) for x, y in self.points)):
             raise ValueError(f"{self.type.title()} coordinates require exactly {expected_points} finite points.")
+        if expected_points:
+            vertex = self.points[1]
+            endpoints = [self.points[0]] if self.type == "length" else [self.points[0], self.points[2]]
+            if not all(0 < math.hypot(x - vertex[0], y - vertex[1]) < math.inf for x, y in endpoints):
+                raise ValueError(f"{self.type.title()} coordinates require finite, non-zero measurement arms.")
         return self
 
 
@@ -280,6 +292,7 @@ class ChatMessage(BaseModel):
 
 class CaseRecord(BaseModel):
     case_id: str = Field(default_factory=lambda: str(uuid4()))
+    revision: int = Field(default=0, ge=0)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
     title: str = "Untitled X-ray case"

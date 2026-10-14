@@ -12,7 +12,6 @@ from app.model_finder.providers import list_local_model_artifacts
 from app.model_registry.validation_evidence import hash_artifact_file
 from app.runtime.secrets import safe_error
 
-
 FRACTURE_LABEL_TERMS = ("fracture", "fractured", "break")
 
 
@@ -84,6 +83,9 @@ def run_msk_fracture_detector(image_path: str | None, model_id: str, cpu_only: b
         detections = []
         rejected = 0
         for xyxy, confidence, class_id in zip(boxes.xyxy.cpu().tolist(), boxes.conf.cpu().tolist(), boxes.cls.cpu().tolist()):
+            if not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                rejected += 1
+                continue
             label = str(names.get(int(class_id), f"class_{int(class_id)}")) if isinstance(names, dict) else str(names[int(class_id)])
             if not any(term in label.lower() for term in FRACTURE_LABEL_TERMS):
                 continue
@@ -94,7 +96,7 @@ def run_msk_fracture_detector(image_path: str | None, model_id: str, cpu_only: b
             detections.append({
                 "label": "candidate fracture",
                 "model_label": label,
-                "confidence": max(0.0, min(1.0, float(confidence))),
+                "confidence": float(confidence),
                 "coordinate": coordinate,
             })
             if len(detections) >= 20:
@@ -103,7 +105,7 @@ def run_msk_fracture_detector(image_path: str | None, model_id: str, cpu_only: b
             "MSK fracture boxes are unvalidated research localizations and require radiologist/physician review."
         ]
         if rejected:
-            warnings.append(f"Rejected {rejected} invalid detector box(es) after original-image coordinate validation.")
+            warnings.append(f"Rejected {rejected} invalid detector candidate(s) after confidence and original-image coordinate validation.")
         return {
             "status": "ok",
             "model": model_id,

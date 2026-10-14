@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import inspect
+import json
 import re
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageStat
-
 from app.anatomy.router import resolve_profile_model, route_study
-from app.medrax_adapter.interfaces import AgentOrchestrator, OutputNormalizer, demo_medrax_tools
+from app.medrax_adapter.interfaces import (
+    AgentOrchestrator,
+    OutputNormalizer,
+    demo_medrax_tools,
+)
 from app.models.schemas import (
     AnalysisInput,
     AnalysisResult,
@@ -28,11 +31,21 @@ from app.models.schemas import (
 )
 from app.results.composer import compose_result_cards
 from app.results.differential import build_differential_assistance
-from app.runtime.adapters import ollama_chat, ollama_vision, require_allowed_endpoint, runtime_task_connection
-from app.runtime.secrets import safe_error, provider_key
-from app.runtime.adapters import openai_compatible_chat, openai_compatible_vision
-from app.vision.torchxrayvision_classifier import is_torchxrayvision_model, run_torchxrayvision_classifier
+from app.runtime.adapters import (
+    ollama_chat,
+    ollama_vision,
+    openai_compatible_chat,
+    openai_compatible_vision,
+    require_allowed_endpoint,
+    runtime_task_connection,
+)
+from app.runtime.secrets import provider_key, safe_error
+from app.vision.torchxrayvision_classifier import (
+    is_torchxrayvision_model,
+    run_torchxrayvision_classifier,
+)
 from app.vision.ultralytics_detector import run_msk_fracture_detector
+from PIL import Image, ImageStat
 
 
 def _provider_call(function, args: tuple[Any, ...], options: dict[str, Any]) -> str:
@@ -330,10 +343,10 @@ def _primary_observation(reading: SystematicReading) -> str:
     if _is_chest_region(reading.body_region):
         return _short_text(reading.lung_pleura_mediastinum_cardiac, 1200)
     if _is_orthopedic_region(reading.body_region):
-        return _short_text(" ".join([reading.alignment_anatomy, reading.bone_joint, reading.soft_tissue]), 1200)
+        return _short_text(f"{reading.alignment_anatomy} {reading.bone_joint} {reading.soft_tissue}", 1200)
     if _is_abdomen_region(reading.body_region):
         return _short_text(reading.abdomen, 1200)
-    return _short_text(" ".join([reading.alignment_anatomy, reading.bone_joint, reading.soft_tissue, reading.abdomen]), 1200)
+    return _short_text(f"{reading.alignment_anatomy} {reading.bone_joint} {reading.soft_tissue} {reading.abdomen}", 1200)
 
 
 def _ollama_vision_prompt(custom_prompt: str = "", body_region: str = "Unknown/general X-ray", language: str = "en", review_depth: str = "balanced") -> str:
@@ -678,7 +691,7 @@ async def run_analysis(
                 "warnings": [f"Chest classifier was not run on {anatomy_route.profile_label}."],
             }
         else:
-            classifier_result = run_torchxrayvision_classifier(image.get("stored_path"), classification_model)
+            classifier_result = await asyncio.to_thread(run_torchxrayvision_classifier, image.get("stored_path"), classification_model)
         if classifier_result.get("status") == "ok":
             parsed_findings: list[Finding] = []
             for item in _list_of_dicts(classifier_result.get("findings")):
@@ -705,7 +718,7 @@ async def run_analysis(
                 vision_prompt = _ollama_vision_prompt(custom_prompt, body_region, language, review_depth)
                 call_args = (image["stored_path"], vision_prompt, vision_model, model_base_url) if vision_backend == "ollama" else (image["stored_path"], vision_prompt, vision_model, model_base_url, provider_key(model_base_url))
                 provider = ollama_vision if vision_backend == "ollama" else openai_compatible_vision
-                content = _provider_call(provider, call_args, generation_options)
+                content = await asyncio.to_thread(_provider_call, provider, call_args, generation_options)
                 if content.strip():
                     summary = _short_text(_without_annotation_payload(content))
                     vision_result = {"status": "ok", "model": vision_model, "content": content}
@@ -759,7 +772,8 @@ async def run_analysis(
                 "warnings": ["Grounding model was not run because it is not a reviewed local artifact."],
             }
         else:
-            localization_result = run_msk_fracture_detector(
+            localization_result = await asyncio.to_thread(
+                run_msk_fracture_detector,
                 image.get("stored_path"),
                 grounding_model,
                 cpu_only=bool((runtime_snapshot or {}).get("cpu_only", True)),
@@ -930,7 +944,7 @@ async def run_analysis(
             model_base_url = str(report_connection["base_url"])
             require_allowed_endpoint(model_base_url, bool(report_connection["allow_cloud"]))
             args = (case_id, reading, quality, result_cards, report_model, model_base_url)
-            report = build_ollama_report(*args, backend=report_backend, language=report_language, review_depth=review_depth, generation_options=generation_options)
+            report = await asyncio.to_thread(build_ollama_report, *args, backend=report_backend, language=report_language, review_depth=review_depth, generation_options=generation_options)
             report_fallback = report.watermark.startswith("Built-in Demo report fallback")
             trace.append(ModelTrace(stage="report_generation", backend="demo" if report_fallback else report_backend, model="demo-report-generator" if report_fallback else report_model, status="fallback" if report_fallback else "ok", detail=report.watermark if report_fallback else f"{report_backend} report draft generated."))
         except Exception as exc:

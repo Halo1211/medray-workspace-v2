@@ -24,6 +24,7 @@ import {
   Plus,
   Circle,
   Ruler,
+  Triangle,
   Undo2,
   Redo2,
   RotateCw,
@@ -49,9 +50,11 @@ import {
   ZoomOut
 } from "lucide-react";
 import { api, dicomPreviewUrl, imageUrl } from "./services/api";
-import { annotationsForImage, buildGroundedReviewStatements, linkAnnotationEvidence, preferredAnnotations } from "./annotationLinks";
-import { coordinatePoints, hasPointCoordinate, hasPolygonCoordinate, isValidPolygonPoints, polygonArea, polygonBounds } from "./annotationGeometry";
-import { commitAnnotationChange, createAnnotationHistory, measureAnnotation, redoAnnotationChange, undoAnnotationChange } from "./annotationWorkspace";
+import { CaseSaveSession } from "./casePersistence";
+import { applyCaseAnnotations, captureAnnotationEvidence, restoreAnnotationEvidence } from "./annotationCaseReview";
+import { annotationMatchesStudyImage, buildGroundedReviewStatements, linkAnnotationEvidence, preferredAnnotations } from "./annotationLinks";
+import { coordinatePoints, hasAngleCoordinate, hasPointCoordinate, hasPolygonCoordinate, isValidAnglePoints, isValidPolygonPoints, polygonArea, polygonBounds } from "./annotationGeometry";
+import { commitAnnotationChange, createAnnotationHistory, measureAnnotation, redoAnnotationChange, undoAnnotationChange, type PixelSpacing } from "./annotationWorkspace";
 import { EMPTY_CASE_METADATA, annotationConfidencePercent, annotationOrigin, buildValidationRerunPrompt, caseMetadataDraft, createFreshCaseWorkspaceState, filterWorkspaceAnnotations, mergeCaseMetadata, type AnnotationWorkspaceFilter, type CaseMetadataDraft } from "./caseWorkspace";
 import type { AnalysisResult, Annotation, AnnotationReviewExport, CaseRecord, DatabaseLocation, DicomSafetyReport, DicomTag, DicomViewerProfile, DifferentialCandidate, DownloadJob, HardwarePlan, HuggingFaceAuthStatus, LocalModelArtifact, ModelCard, ReferenceCatalog, ResultCard, ResultEvidence, RuntimeConfig, StudyImage, ValidationLabel, ValidationResult, VisionAdapter } from "./types";
 import "./styles.css";
@@ -61,7 +64,7 @@ import { setupApi } from "./aiSetupApi";
 type Page = "Dashboard" | "Reading Room" | "Case Library" | "User Guide" | "Model Finder" | "Runtime Settings" | "General Settings" | "About";
 type WorkspaceTab = "AI Output" | "Result Cards" | "Annotations" | "Report" | "AI Chat" | "Trust" | "DICOM Safety";
 type ImageBoxSize = { displayWidth: number; displayHeight: number; naturalWidth: number; naturalHeight: number };
-type AnnotationTool = "select" | "box" | "point" | "polygon" | "ellipse" | "length";
+type AnnotationTool = "select" | "box" | "point" | "polygon" | "ellipse" | "length" | "angle";
 type AnnotationReviewStatus = NonNullable<Annotation["review_status"]>;
 type UiLanguage = "id" | "en";
 
@@ -305,30 +308,35 @@ function analysisForStudyImage(activeCase: CaseRecord | null, image: StudyImage)
 }
 
 function annotationBelongsToImage(annotation: Annotation, image: StudyImage | null, firstImage: boolean, images: StudyImage[] = []) {
-  if (!image) return false;
-  const sourceId = String(annotation.source_image_id || "");
-  const filename = String(image.filename || "");
-  const uniqueFilename = filename && images.filter(item => String(item.filename || "") === filename).length === 1 ? filename : "";
-  const acceptedIds = [image.image_id, image.sop_instance_uid, uniqueFilename].filter(Boolean).map(String);
-  return annotationsForImage([annotation], image.image_id, firstImage).length === 1 || acceptedIds.includes(sourceId);
+  return annotationMatchesStudyImage(annotation, image, firstImage, images);
 }
 
-function App() {
+function readPreference(key: string): string | null {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+
+function writePreference(key: string, value: string) {
+  try { window.localStorage.setItem(key, value); } catch { /* Browser preferences are optional; keep the current UI usable. */ }
+}
+
+export function App() {
   const [page, setPage] = useState<Page>("Dashboard");
-  const [dark, setDark] = useState(() => window.localStorage.getItem("medray-theme") !== "light");
-  const [language, setLanguage] = useState<UiLanguage>(() => (window.localStorage.getItem("medray-ui-language") === "id" ? "id" : "en"));
+  const [dark, setDark] = useState(() => readPreference("medray-theme") !== "light");
+  const [language, setLanguage] = useState<UiLanguage>(() => (readPreference("medray-ui-language") === "id" ? "id" : "en"));
   const copy = UI_COPY[language];
   const [status, setStatus] = useState(copy.starting);
   const [activeCase, setActiveCase] = useState<CaseRecord | null>(null);
   const [preview, setPreview] = useState("");
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [advancedNavOpen, setAdvancedNavOpen] = useState(false);
+  const caseLoadVersionRef = useRef(0);
+  useEffect(() => () => { caseLoadVersionRef.current += 1; }, []);
 
   useEffect(() => {
     document.body.dataset.theme = dark ? "dark" : "light";
     document.documentElement.lang = language;
-    window.localStorage.setItem("medray-theme", dark ? "dark" : "light");
-    window.localStorage.setItem("medray-ui-language", language);
+    writePreference("medray-theme", dark ? "dark" : "light");
+    writePreference("medray-ui-language", language);
     api.health().then(() => setStatus(language === "en" ? "App ready" : "Aplikasi siap")).catch(() => setStatus(copy.backendOffline));
   }, [dark, language, copy.backendOffline]);
 
@@ -336,26 +344,45 @@ function App() {
     setAdvancedNavOpen(ADVANCED_PAGES.has(page));
   }, [page]);
 
+  function navigate(nextPage: Page) {
+    caseLoadVersionRef.current += 1;
+    setPage(nextPage);
+  }
+
+  function synchronizeSavedRevision(saved: CaseRecord) {
+    setActiveCase(current => current?.case_id === saved.case_id && saved.revision !== undefined && saved.revision > (current.revision ?? 0)
+      ? { ...current, revision: saved.revision }
+      : current);
+  }
+
   const loadCase = async (id: string, imageId = "") => {
-    let c = await api.caseDetail(id);
-    // Validation labels may refer to the image identity rather than the
-    // currently active image. Resolve common legacy identities before
-    // switching, then let the backend persist the selected image safely.
-    const requestedImage = imageId
-      ? caseStudyImages(c).find(image => [image.image_id, image.sop_instance_uid, image.filename].filter(Boolean).map(String).includes(String(imageId)))
-      : undefined;
-    if (requestedImage && requestedImage.image_id !== c.active_image_id) {
-      c = await api.setActiveStudyImage(id, requestedImage.image_id);
+    const version = ++caseLoadVersionRef.current;
+    try {
+      let c = await api.caseDetail(id);
+      if (version !== caseLoadVersionRef.current) return;
+      // Validation labels may refer to the image identity rather than the
+      // currently active image. Resolve common legacy identities before
+      // switching, then let the backend persist the selected image safely.
+      const requestedImage = imageId
+        ? caseStudyImages(c).find(image => [image.image_id, image.sop_instance_uid, image.filename].filter(Boolean).map(String).includes(String(imageId)))
+        : undefined;
+      if (requestedImage && requestedImage.image_id !== c.active_image_id) {
+        c = await api.setActiveStudyImage(id, requestedImage.image_id);
+        if (version !== caseLoadVersionRef.current) return;
+      }
+      const image = activeStudyImageClient(c);
+      setActiveCase(c);
+      setAnalysis(c.analysis || null);
+      setPreview(image?.preview_path ? imageUrl(image.preview_path) : "");
+      setPage("Reading Room");
+    } catch (error) {
+      if (version === caseLoadVersionRef.current) throw error;
     }
-    const image = activeStudyImageClient(c);
-    setActiveCase(c);
-    setAnalysis(c.analysis || null);
-    setPreview(image?.preview_path ? imageUrl(image.preview_path) : "");
-    setPage("Reading Room");
   };
 
   function clearActiveCaseIf(id?: string) {
     if (!id || !activeCase || activeCase.case_id === id) {
+      caseLoadVersionRef.current += 1;
       setActiveCase(null);
       setAnalysis(null);
       setPreview("");
@@ -363,6 +390,7 @@ function App() {
   }
 
   function startNewCase() {
+    caseLoadVersionRef.current += 1;
     const fresh = createFreshCaseWorkspaceState();
     setActiveCase(fresh.activeCase);
     setAnalysis(fresh.analysis);
@@ -379,11 +407,11 @@ function App() {
           {navGroups.map(group => group.label.id === "Riset" ? <details className="navDisclosure" key={group.label.id} open={advancedNavOpen} onToggle={event => setAdvancedNavOpen(event.currentTarget.open)}>
             <summary><Layers size={16} /><span>{language === "en" ? "Research" : "Riset"}</span></summary>
             <div className="navGroup">
-              {group.pages.map(p => <button key={p.name} className={page === p.name ? "active" : ""} aria-current={page === p.name ? "page" : undefined} onClick={() => setPage(p.name)}>{p.icon}<span>{copy.pages[p.name]}</span></button>)}
+              {group.pages.map(p => <button key={p.name} className={page === p.name ? "active" : ""} aria-current={page === p.name ? "page" : undefined} onClick={() => navigate(p.name)}>{p.icon}<span>{copy.pages[p.name]}</span></button>)}
             </div>
           </details> : <div className="navGroup" key={group.label.id}>
             <span className="navGroupLabel">{group.label[language]}</span>
-            {group.pages.map(p => <button key={p.name} className={page === p.name ? "active" : ""} aria-current={page === p.name ? "page" : undefined} onClick={() => setPage(p.name)}>{p.icon}<span>{copy.pages[p.name]}</span></button>)}
+            {group.pages.map(p => <button key={p.name} className={page === p.name ? "active" : ""} aria-current={page === p.name ? "page" : undefined} onClick={() => navigate(p.name)}>{p.icon}<span>{copy.pages[p.name]}</span></button>)}
           </div>)}
         </nav>
         <div className="railSafety"><ShieldCheck size={16} /><span>{language === "en" ? "Research only · verify every AI output" : "Khusus riset · verifikasi semua output AI"}</span></div>
@@ -395,15 +423,15 @@ function App() {
             <p>{PAGE_DESCRIPTIONS[language][page]}</p>
           </div>
           <div className="topbarActions">
-            <button className={`globalSettingsButton ${page === "General Settings" ? "active" : ""}`} onClick={() => setPage("General Settings")} aria-label={copy.pages["General Settings"]} aria-current={page === "General Settings" ? "page" : undefined}><Settings size={16} /><span>{copy.pages["General Settings"]}</span></button>
+            <button className={`globalSettingsButton ${page === "General Settings" ? "active" : ""}`} onClick={() => navigate("General Settings")} aria-label={copy.pages["General Settings"]} aria-current={page === "General Settings" ? "page" : undefined}><Settings size={16} /><span>{copy.pages["General Settings"]}</span></button>
             <div className={`status ${status === copy.backendOffline ? "offline" : status === copy.starting ? "connecting" : "online"}`} role="status" aria-live="polite">{status === copy.backendOffline ? <XCircle size={17} /> : status === copy.starting ? <RefreshCw size={17} /> : <CheckCircle2 size={17} />}{status}</div>
           </div>
         </header>
-        {page === "Dashboard" && <Dashboard activeCase={activeCase} analysis={analysis} onNavigate={setPage} />}
-        {page === "Reading Room" && <ReadingRoom activeCase={activeCase} setActiveCase={setActiveCase} preview={preview} setPreview={setPreview} analysis={analysis} setAnalysis={setAnalysis} onOpenGuide={() => setPage("User Guide")} onNewCase={startNewCase} onOpenLibrary={() => setPage("Case Library")} />}
-        {page === "User Guide" && <UserGuide onNavigate={setPage} />}
-        {page === "Runtime Settings" && <AISetup language={language} modelTools={detail => <LocalModelManager selectedDetail={detail} />} onLater={() => setPage("Reading Room")} />}
-        {page === "General Settings" && <GeneralSettings dark={dark} setDark={setDark} language={language} setLanguage={setLanguage} onOpenRuntime={() => setPage("Runtime Settings")} />}
+        {page === "Dashboard" && <Dashboard activeCase={activeCase} analysis={analysis} onNavigate={navigate} />}
+        {page === "Reading Room" && <ReadingRoom activeCase={activeCase} setActiveCase={setActiveCase} preview={preview} setPreview={setPreview} analysis={analysis} setAnalysis={setAnalysis} onCaseSaved={synchronizeSavedRevision} onOpenGuide={() => navigate("User Guide")} onNewCase={startNewCase} onOpenLibrary={() => navigate("Case Library")} />}
+        {page === "User Guide" && <UserGuide onNavigate={navigate} />}
+        {page === "Runtime Settings" && <AISetup language={language} modelTools={detail => <LocalModelManager selectedDetail={detail} />} onLater={() => navigate("Reading Room")} />}
+        {page === "General Settings" && <GeneralSettings dark={dark} setDark={setDark} language={language} setLanguage={setLanguage} onOpenRuntime={() => navigate("Runtime Settings")} />}
         {page === "Case Library" && <CaseLibrary activeCase={activeCase} analysis={analysis} onOpen={loadCase} onDeleted={clearActiveCaseIf} onCleared={() => clearActiveCaseIf()} />}
         {page === "About" && <About />}
       </main>
@@ -508,6 +536,7 @@ export function ReadingRoom(props: {
   setPreview: (s: string) => void;
   analysis: AnalysisResult | null;
   setAnalysis: (a: AnalysisResult | null) => void;
+  onCaseSaved?: (c: CaseRecord) => void;
   onOpenGuide: () => void;
   onNewCase: () => void;
   onOpenLibrary: () => void;
@@ -557,6 +586,78 @@ export function ReadingRoom(props: {
   const overlayAnnotations = filteredAnnotations.filter(annotation => annotation.source !== "fallback heuristic");
   const annotationsRef = useRef<Annotation[]>(allAnnotations);
   const annotationSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const annotationSaveErrorRef = useRef<unknown>(null);
+  const currentCaseRef = useRef(activeCase);
+  const receivedCaseRef = useRef(activeCase);
+  const operationVersionRef = useRef(0);
+  const roomMountedRef = useRef(true);
+  const operationCaseRef = useRef(activeCase?.case_id);
+  if (receivedCaseRef.current !== activeCase) {
+    if (currentCaseRef.current?.case_id !== activeCase?.case_id) operationVersionRef.current += 1;
+    receivedCaseRef.current = activeCase;
+    currentCaseRef.current = activeCase;
+  }
+  useEffect(() => {
+    roomMountedRef.current = true;
+    return () => { roomMountedRef.current = false; operationVersionRef.current += 1; };
+  }, []);
+  useEffect(() => {
+    if (operationCaseRef.current !== activeCase?.case_id) {
+      setBusy(false);
+      setError("");
+      operationCaseRef.current = activeCase?.case_id;
+    }
+  }, [activeCase?.case_id]);
+  const saveContextRef = useRef({ caseId: activeCase?.case_id, session: new CaseSaveSession(api.saveCase) });
+  if (saveContextRef.current.caseId !== activeCase?.case_id) {
+    saveContextRef.current = { caseId: activeCase?.case_id, session: new CaseSaveSession(api.saveCase) };
+  }
+  const saveSession = saveContextRef.current.session;
+  function applyCase(record: CaseRecord | null) {
+    operationCaseRef.current = record?.case_id;
+    currentCaseRef.current = record;
+    setActiveCase(record);
+  }
+  async function saveReviewedCase(record: CaseRecord) {
+    const saved = await saveSession.save(record);
+    if (!roomMountedRef.current) {
+      props.onCaseSaved?.(saved);
+      return saved;
+    }
+    const current = currentCaseRef.current;
+    if (saveContextRef.current.session === saveSession && current?.case_id === saved.case_id) {
+      applyCase({ ...current, revision: saved.revision ?? current.revision });
+    }
+    return saved;
+  }
+  async function reloadSavedCase() {
+    const caseId = currentCaseRef.current?.case_id;
+    if (!caseId) return;
+    const operationVersion = ++operationVersionRef.current;
+    const isCurrent = () => operationVersionRef.current === operationVersion && currentCaseRef.current?.case_id === caseId;
+    setBusy(true);
+    try {
+      await saveSession.idle().catch(() => undefined);
+      const saved = await api.caseDetail(caseId);
+      if (!isCurrent() || saveContextRef.current.session !== saveSession) return;
+      saveContextRef.current = { caseId, session: new CaseSaveSession(api.saveCase) };
+      annotationSaveErrorRef.current = null;
+      const annotations = preferredAnnotations(saved.annotations, saved.analysis?.annotations);
+      annotationsRef.current = annotations;
+      const history = createAnnotationHistory(annotations, 50, captureAnnotationEvidence(saved));
+      annotationHistoryRef.current = history;
+      setAnnotationHistory(history);
+      applyCase(saved);
+      setAnalysis(saved.analysis || null);
+      setPreview(saved.image_preview ? imageUrl(saved.image_preview) : "");
+      setCaseTitle(saved.title);
+      setCaseMetadata(caseMetadataDraft(saved.metadata));
+      setSelectedAnnotationId(null);
+      setError("");
+    } catch (exc) { if (isCurrent()) setError(String(exc)); }
+    finally { if (isCurrent()) setBusy(false); }
+  }
+  useEffect(() => { annotationSaveErrorRef.current = null; }, [activeCase?.case_id, activeImage?.image_id]);
   const annotationHistoryRef = useRef(annotationHistory);
   const activeImageIsDicom = Boolean(activeImage?.is_dicom || activeImage?.source_path?.toLowerCase().match(/\.(dcm|dicom)$/) || String(activeImage?.format || "").toUpperCase() === "DICOM");
   const displayedPreview = activeCase && activeImage && activeImageIsDicom
@@ -566,14 +667,14 @@ export function ReadingRoom(props: {
   useEffect(() => {
     setCaseTitle(activeCase?.title || "");
     setCaseMetadata(caseMetadataDraft(activeCase?.metadata || {}));
-  }, [activeCase?.case_id]);
+  }, [activeCase?.case_id, activeCase?.active_image_id]);
 
   useEffect(() => {
     annotationsRef.current = allAnnotations;
   }, [allAnnotations]);
 
   useEffect(() => {
-    const history = createAnnotationHistory(preferredAnnotations(activeCase?.annotations, activeCase?.analysis?.annotations));
+    const history = createAnnotationHistory(preferredAnnotations(activeCase?.annotations, activeCase?.analysis?.annotations), 50, activeCase ? captureAnnotationEvidence(activeCase) : {});
     annotationHistoryRef.current = history;
     setAnnotationHistory(history);
   }, [activeCase?.case_id]);
@@ -581,6 +682,7 @@ export function ReadingRoom(props: {
   useEffect(() => { annotationHistoryRef.current = annotationHistory; }, [annotationHistory]);
 
   useEffect(() => {
+    let cancelled = false;
     setDicomProfile(null);
     setDicomFrame(0);
     setWindowCenter(undefined);
@@ -588,70 +690,93 @@ export function ReadingRoom(props: {
     setDicomInvert(false);
     if (!activeCase || !activeImage || !activeImageIsDicom) return;
     api.dicomViewerProfile(activeCase.case_id, activeImage.image_id).then(profile => {
+      if (cancelled) return;
       setDicomProfile(profile);
       setWindowCenter(profile.default_window?.center);
       setWindowWidth(profile.default_window?.width);
-    }).catch(exc => setError(String(exc)));
+    }).catch(exc => { if (!cancelled) setError(String(exc)); });
+    return () => { cancelled = true; };
   }, [activeCase?.case_id, activeImage?.image_id, activeImageIsDicom]);
 
   function revision(action: string, note: string) {
     return { action, timestamp: new Date().toISOString(), actor: "local reviewer", note };
   }
 
-  async function saveAnnotations(nextAnnotations: Annotation[], nextResultCards?: ResultCard[]) {
+  async function saveAnnotations(nextAnnotations: Annotation[], nextResultCards?: ResultCard[], restoredCase?: CaseRecord) {
     if (!activeCase) return;
     annotationsRef.current = nextAnnotations;
-    const baseAnalysis = analysis || activeCase.analysis;
-    const activeAnnotations = nextAnnotations.filter(annotation => annotationBelongsToImage(annotation, activeImage, activeImageIndex === 0, studyImages));
-    const nextAnalysis = baseAnalysis ? {
-      ...baseAnalysis,
-      annotations: activeAnnotations,
-      result_cards: nextResultCards || baseAnalysis.result_cards
-    } : undefined;
-    const nextCase = {
-      ...activeCase,
-      annotations: nextAnnotations,
-      ...(nextAnalysis ? { analysis: nextAnalysis, report: nextAnalysis.report } : {})
-    };
+    const baseCase = restoredCase || currentCaseRef.current || activeCase;
+    const baseAnalysis = baseCase.analysis || analysis || undefined;
+    const nextCase = applyCaseAnnotations(baseCase, nextAnnotations, baseAnalysis && nextResultCards ? { ...baseAnalysis, result_cards: nextResultCards } : baseAnalysis);
+    const nextAnalysis = nextCase.analysis;
     setAnalysis(nextAnalysis || null);
-    setActiveCase(nextCase);
-    annotationSaveQueueRef.current = annotationSaveQueueRef.current
-      .catch(() => undefined)
-      .then(async () => { await api.saveCase(nextCase); })
-      .catch(exc => { setError(`${language === "en" ? "Annotation was not saved" : "Anotasi belum tersimpan"}: ${String(exc)}`); });
+    applyCase(nextCase);
+    annotationSaveQueueRef.current = saveReviewedCase(nextCase)
+      .then(() => { if (saveContextRef.current.session === saveSession) annotationSaveErrorRef.current = null; })
+      .catch(exc => {
+        if (saveContextRef.current.session !== saveSession) return;
+        annotationSaveErrorRef.current = exc;
+        setError(`${language === "en" ? "Annotation was not saved" : "Anotasi belum tersimpan"}: ${String(exc)}`);
+      });
     await annotationSaveQueueRef.current;
   }
 
-  function recordAnnotationHistory(nextAnnotations: Annotation[]) {
-    setAnnotationHistory(current => commitAnnotationChange(current, nextAnnotations));
+  async function beforeExport() {
+    let pending: Promise<void>;
+    do {
+      pending = annotationSaveQueueRef.current;
+      await pending;
+    } while (pending !== annotationSaveQueueRef.current);
+    if (annotationSaveErrorRef.current) throw annotationSaveErrorRef.current;
+    await saveSession.idle();
+  }
+
+  function recordAnnotationHistory(nextAnnotations: Annotation[], nextResultCards?: ResultCard[]) {
+    const baseCase = currentCaseRef.current || activeCase;
+    const baseAnalysis = baseCase?.analysis || analysis || undefined;
+    const links = baseCase ? captureAnnotationEvidence(applyCaseAnnotations(baseCase, nextAnnotations, baseAnalysis && nextResultCards ? { ...baseAnalysis, result_cards: nextResultCards } : baseAnalysis)) : {};
+    const next = commitAnnotationChange(annotationHistoryRef.current, nextAnnotations, links);
+    annotationHistoryRef.current = next;
+    setAnnotationHistory(next);
   }
 
   function restoreAnnotationHistory(direction: "undo" | "redo") {
-    const next = direction === "undo" ? undoAnnotationChange(annotationHistoryRef.current) : redoAnnotationChange(annotationHistoryRef.current);
+    const previous = annotationHistoryRef.current;
+    const next = direction === "undo" ? undoAnnotationChange(previous) : redoAnnotationChange(previous);
     if (next === annotationHistoryRef.current) return;
     annotationHistoryRef.current = next;
     setAnnotationHistory(next);
     setSelectedAnnotationId(null);
-    void saveAnnotations(next.present);
+    const baseCase = currentCaseRef.current || activeCase;
+    void saveAnnotations(next.present, undefined, baseCase ? restoreAnnotationEvidence(baseCase, previous.presentLinks, next.presentLinks) : undefined);
   }
 
   async function saveCaseIdentity() {
     if (!activeCase) return;
     const title = caseTitle.trim() || caseMetadata.localRecordId.trim() || activeCase.title;
+    const isCurrent = () => roomMountedRef.current && saveContextRef.current.session === saveSession && currentCaseRef.current?.case_id === activeCase.case_id;
     setBusy(true);
     setError("");
     try {
-      const saved = await api.saveCase({ ...activeCase, title, metadata: mergeCaseMetadata(activeCase.metadata, caseMetadata) });
-      setActiveCase(saved);
-      setCaseTitle(saved.title);
+      await annotationSaveQueueRef.current;
+      if (!isCurrent()) return;
+      await saveSession.idle();
+      if (!isCurrent()) return;
+      const latest = currentCaseRef.current || activeCase;
+      const draft = { ...latest, title, metadata: mergeCaseMetadata(latest.metadata, caseMetadata) };
+      applyCase(draft);
+      const saved = await saveReviewedCase(draft);
+      if (!isCurrent()) return;
+      setCaseTitle(current => current.trim() === title ? saved.title : current);
     } catch (exc) {
-      setError(`${language === "en" ? "Case identity was not saved" : "Identitas kasus belum tersimpan"}: ${String(exc)}`);
+      if (isCurrent()) setError(`${language === "en" ? "Case identity was not saved" : "Identitas kasus belum tersimpan"}: ${String(exc)}`);
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   }
 
   function updateAnnotation(id: string, patch: Partial<Annotation>, action = "edited", note = "Annotation updated by reviewer.") {
+    if (patch.coordinate && annotationsRef.current.find(annotation => annotation.id === id)?.locked) return;
     const next = annotationsRef.current.map(annotation => annotation.id === id ? {
       ...annotation,
       ...patch,
@@ -727,7 +852,7 @@ export function ReadingRoom(props: {
     }));
     setSelectedAnnotationId(null);
     const next = annotationsRef.current.filter(item => item.id !== id);
-    recordAnnotationHistory(next);
+    recordAnnotationHistory(next, nextCards);
     void saveAnnotations(next, nextCards);
   }
 
@@ -756,62 +881,78 @@ export function ReadingRoom(props: {
       reportStatementId,
       revision("edited", "Grounded evidence links updated by reviewer.")
     );
-    recordAnnotationHistory(linked.annotations);
+    recordAnnotationHistory(linked.annotations, linked.cards);
     void saveAnnotations(linked.annotations, linked.cards);
   }
 
   useEffect(() => {
     function onHistoryShortcut(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable=true]")) return;
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
       event.preventDefault();
       restoreAnnotationHistory(event.shiftKey ? "redo" : "undo");
     }
     window.addEventListener("keydown", onHistoryShortcut);
     return () => window.removeEventListener("keydown", onHistoryShortcut);
-  }, []);
+  }, [activeCase, analysis, language]);
 
   async function onFiles(files?: FileList | null) {
     const selectedFiles = files ? Array.from(files) : [];
     if (!selectedFiles.length) return;
+    const operationVersion = ++operationVersionRef.current;
+    const isCurrent = () => operationVersionRef.current === operationVersion;
     setBusy(true);
     setError("");
     try {
-      const uploaded = await api.upload(selectedFiles[0], activeCase ? "" : (caseTitle.trim() || caseMetadata.localRecordId.trim()));
-      let nextCase = uploaded.case;
-      for (const file of selectedFiles.slice(1)) {
+      await beforeExport();
+      if (!isCurrent()) return;
+      const uploaded = activeCase ? null : await api.upload(selectedFiles[0], caseTitle.trim() || caseMetadata.localRecordId.trim());
+      if (!isCurrent()) return;
+      let nextCase = activeCase || uploaded!.case;
+      // Keep successfully imported files visible even if a later file fails.
+      applyCase(nextCase);
+      setAnalysis(nextCase.analysis || null);
+      setPreview(uploaded?.preview_data_url || (nextCase.image_preview ? imageUrl(nextCase.image_preview) : ""));
+      for (const file of selectedFiles.slice(activeCase ? 0 : 1)) {
         const appended = await api.addStudyImage(nextCase.case_id, file);
+        if (!isCurrent()) return;
         nextCase = appended.case;
+        applyCase(nextCase);
       }
       if (!activeCase) {
-        nextCase = await api.saveCase({
+        nextCase = await saveReviewedCase({
           ...nextCase,
           title: caseTitle.trim() || caseMetadata.localRecordId.trim() || nextCase.title,
           metadata: mergeCaseMetadata(nextCase.metadata, caseMetadata),
         });
+        if (!isCurrent()) return;
       }
-      setActiveCase(nextCase);
-      setPreview(uploaded.preview_data_url);
-      setAnalysis(null);
+      applyCase(nextCase);
+      setAnalysis(nextCase.analysis || null);
       setCaseTitle(nextCase.title);
       setAnatomyProfileOverride("");
       setSideTab("Result Cards");
     } catch (exc) {
-      setError(String(exc));
+      if (isCurrent()) setError(String(exc));
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   }
 
   async function selectStudyImage(imageId: string) {
     if (!activeCase || imageId === activeImage?.image_id) return;
+    const operationVersion = ++operationVersionRef.current;
+    const isCurrent = () => operationVersionRef.current === operationVersion;
     setBusy(true);
     setError("");
     try {
+      await beforeExport();
+      if (!isCurrent()) return;
       const nextCase = await api.setActiveStudyImage(activeCase.case_id, imageId);
+      if (!isCurrent()) return;
       const nextImage = activeStudyImageClient(nextCase);
-      setActiveCase(nextCase);
+      applyCase(nextCase);
       setAnalysis(nextCase.analysis || null);
       setPreview(nextImage?.preview_path ? imageUrl(nextImage.preview_path) : "");
       setSelectedAnnotationId(null);
@@ -819,29 +960,40 @@ export function ReadingRoom(props: {
       setSelectedReportStatementId(null);
       setZoom(1);
     } catch (exc) {
-      setError(String(exc));
+      if (isCurrent()) setError(String(exc));
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   }
 
   async function run(instruction = prompt) {
     if (!activeCase) return;
+    if (dicomFrame !== 0) {
+      setError(language === "en" ? "Return to frame 1 before running AI analysis." : "Kembali ke frame 1 sebelum menjalankan analisis AI.");
+      return;
+    }
+    const operationVersion = ++operationVersionRef.current;
+    const isCurrent = () => operationVersionRef.current === operationVersion;
     setBusy(true);
     setError("");
     try {
-      const result = await api.analyze(activeCase.case_id, instruction, language, anatomyProfileOverride);
+      await beforeExport();
+      if (!isCurrent()) return;
+      await api.analyze(activeCase.case_id, instruction, language, anatomyProfileOverride);
+      if (!isCurrent()) return;
       const refreshed = await api.caseDetail(activeCase.case_id);
-      setAnalysis(result);
-      setActiveCase(refreshed);
-      const history = createAnnotationHistory(preferredAnnotations(refreshed.annotations, refreshed.analysis?.annotations));
+      if (!isCurrent()) return;
+      setAnalysis(refreshed.analysis || null);
+      applyCase(refreshed);
+      setPreview(refreshed.image_preview ? imageUrl(refreshed.image_preview) : "");
+      const history = createAnnotationHistory(preferredAnnotations(refreshed.annotations, refreshed.analysis?.annotations), 50, captureAnnotationEvidence(refreshed));
       annotationHistoryRef.current = history;
       setAnnotationHistory(history);
       setSideTab("AI Output");
     } catch (exc) {
-      setError(String(exc));
+      if (isCurrent()) setError(String(exc));
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   }
 
@@ -898,7 +1050,7 @@ export function ReadingRoom(props: {
         <div className="readingWorkflowIdentity"><span>{language === "en" ? "Current case" : "Kasus saat ini"}</span><b>{activeCase?.title || (language === "en" ? "No case loaded" : "Belum ada kasus")}</b><small>{nextStepText}</small></div>
         <div className="readingSteps">{workflowStages.map((stage, index) => <button type="button" className={`${stage.done ? "done" : ""} ${workflowCurrentIndex === index ? "current" : ""}`} key={stage.label} onClick={() => openWorkflowStage(index)} disabled={!stage.enabled} aria-current={workflowCurrentIndex === index ? "step" : undefined} aria-label={`${stage.label}: ${stage.done ? (language === "en" ? "complete" : "selesai") : !stage.enabled ? (language === "en" ? "not available yet" : "belum tersedia") : workflowCurrentIndex === index ? (language === "en" ? "next action" : "tindakan berikutnya") : (language === "en" ? "available" : "tersedia")}`}><span>{stage.done ? <CheckCircle2 size={15} /> : index + 1}</span><b>{stage.label}</b></button>)}</div>
         <div className="readingWorkflowActions">
-          {activeCase && <button className="primaryAction" onClick={onNewCase}><Plus size={16} />{language === "en" ? "New case" : "Kasus baru"}</button>}
+          {activeCase && <button className="primaryAction" onClick={onNewCase} disabled={busy}><Plus size={16} />{language === "en" ? "New case" : "Kasus baru"}</button>}
           <button onClick={onOpenLibrary}><Library size={16} />{language === "en" ? "Cases" : "Daftar kasus"}</button>
           <button className="guideShortcut" onClick={onOpenGuide} aria-label={language === "en" ? "Open guide" : "Buka panduan"} title={language === "en" ? "Open guide" : "Buka panduan"}><BookOpen size={16} /></button>
         </div>
@@ -921,7 +1073,7 @@ export function ReadingRoom(props: {
             </div>
             <small>{language === "en" ? "Stored locally with the case. Imported DICOM identifiers remain intact." : "Disimpan lokal bersama kasus. Identitas DICOM hasil impor tetap dipertahankan."}</small>
           </details>
-          <label className="drop"><Upload size={22} /><span>{activeCase ? (language === "en" ? "Add PNG, JPG, or DICOM" : "Tambah PNG, JPG, atau DICOM") : (language === "en" ? "Choose PNG, JPG, or DICOM" : "Pilih PNG, JPG, atau DICOM")}</span><small>{language === "en" ? "Multiple images become one study" : "Beberapa gambar menjadi satu studi"}</small><input type="file" multiple accept=".png,.jpg,.jpeg,.dcm,.dicom" onChange={e => onFiles(e.target.files)} /></label>
+          <label className="drop"><Upload size={22} /><span>{activeCase ? (language === "en" ? "Add PNG, JPG, or DICOM" : "Tambah PNG, JPG, atau DICOM") : (language === "en" ? "Choose PNG, JPG, or DICOM" : "Pilih PNG, JPG, atau DICOM")}</span><small>{language === "en" ? "Multiple images become one study" : "Beberapa gambar menjadi satu studi"}</small><input type="file" multiple disabled={busy} accept=".png,.jpg,.jpeg,.dcm,.dicom" onChange={e => { void onFiles(e.target.files); e.target.value = ""; }} /></label>
           {activeCase && <div className="inlineSuccess"><CheckCircle2 size={16} /><span>{language === "en" ? "Study loaded" : "Studi sudah dimuat"}</span></div>}
           {activeCase && <button onClick={saveCaseIdentity} disabled={busy}>{language === "en" ? "Save case details" : "Simpan detail kasus"}</button>}
         </section>
@@ -929,7 +1081,7 @@ export function ReadingRoom(props: {
         <section className={`guidedAction ${!activeCase ? "mutedAction" : ""} ${routeNeedsConfirmation ? "needsAttention" : ""}`} ref={analysisSectionRef}>
           <div className="guidedActionHeader"><span>2</span><div><h2>{language === "en" ? "Run analysis" : "Jalankan analisis"}</h2><p>{language === "en" ? "Automatic body-area detection is recommended." : "Deteksi area tubuh otomatis direkomendasikan."}</p></div></div>
           {routeNeedsConfirmation && <div className="nextAction" role="status">{language === "en" ? "Body area needs confirmation. Choose it below before running the analysis again." : "Area tubuh perlu dikonfirmasi. Pilih area di bawah sebelum menjalankan analisis ulang."}</div>}
-          <button ref={runAnalysisRef} className="primaryAction runAnalysis" onClick={() => run()} disabled={!activeCase || busy}><Bot size={17} />{busy ? copy.processing : copy.runWorkflow}</button>
+          <button ref={runAnalysisRef} className="primaryAction runAnalysis" onClick={() => run()} disabled={!activeCase || busy || dicomFrame !== 0}><Bot size={17} />{busy ? copy.processing : copy.runWorkflow}</button>
           <details className="advancedOptions" open={advancedAnalysisOpen || routeNeedsConfirmation} onToggle={event => setAdvancedAnalysisOpen(event.currentTarget.open)}>
             <summary>{language === "en" ? "Reading options" : "Opsi analisis lanjutan"}</summary>
             <label className="routeOverride">{language === "en" ? "Body area" : "Area tubuh"}
@@ -983,6 +1135,7 @@ export function ReadingRoom(props: {
             <button aria-label={language === "en" ? "Draw manual polygon" : "Gambar poligon manual"} title={language === "en" ? "Draw manual polygon; double-click or press Enter to finish" : "Gambar poligon manual; klik dua kali atau tekan Enter untuk selesai"} className={annotationTool === "polygon" ? "activeTool" : ""} onClick={() => { setAnnotationTool("polygon"); setShowAnn(true); }} disabled={!preview}><Pentagon size={16} /></button>
             <button aria-label={language === "en" ? "Draw ellipse ROI" : "Gambar ROI elips"} title={language === "en" ? "Draw ellipse ROI" : "Gambar ROI elips"} className={annotationTool === "ellipse" ? "activeTool" : ""} onClick={() => { setAnnotationTool("ellipse"); setShowAnn(true); }} disabled={!preview}><Circle size={16} /></button>
             <button aria-label={language === "en" ? "Measure length" : "Ukur panjang"} title={language === "en" ? "Measure calibrated length" : "Ukur panjang terkalibrasi"} className={annotationTool === "length" ? "activeTool" : ""} onClick={() => { setAnnotationTool("length"); setShowAnn(true); }} disabled={!preview}><Ruler size={16} /></button>
+            <button aria-label={language === "en" ? "Measure angle" : "Ukur sudut"} title={language === "en" ? "Measure angle: click first arm, vertex, then second arm" : "Ukur sudut: klik lengan pertama, titik sudut, lalu lengan kedua"} className={annotationTool === "angle" ? "activeTool" : ""} onClick={() => { setAnnotationTool("angle"); setShowAnn(true); }} disabled={!preview}><Triangle size={16} /></button>
             <button aria-label={language === "en" ? "Undo annotation change" : "Urungkan perubahan anotasi"} title="Ctrl+Z" onClick={() => restoreAnnotationHistory("undo")} disabled={!annotationHistory.past.length}><Undo2 size={16} /></button>
             <button aria-label={language === "en" ? "Redo annotation change" : "Ulangi perubahan anotasi"} title="Ctrl+Shift+Z" onClick={() => restoreAnnotationHistory("redo")} disabled={!annotationHistory.future.length}><Redo2 size={16} /></button>
           </div>
@@ -998,19 +1151,21 @@ export function ReadingRoom(props: {
         </div>}
         {dicomProfile && <div className="dicomViewerControls">
           <b>DICOM</b>
-          {dicomProfile.number_of_frames > 1 && <label>{language === "en" ? "Frame" : "Frame"}<input type="range" min="0" max={dicomProfile.number_of_frames - 1} value={dicomFrame} onChange={event => setDicomFrame(Number(event.target.value))} /><span>{dicomFrame + 1}/{dicomProfile.number_of_frames}</span></label>}
-          <label>{language === "en" ? "Window preset" : "Preset window"}<select value={windowCenter != null && windowWidth != null ? `${windowCenter}:${windowWidth}` : "auto"} onChange={event => { if (event.target.value === "auto") { setWindowCenter(undefined); setWindowWidth(undefined); } else { const [center, width] = event.target.value.split(":").map(Number); setWindowCenter(center); setWindowWidth(width); } }}><option value="auto">Auto VOI LUT</option>{dicomProfile.window_presets.map(preset => <option key={`${preset.name}-${preset.center}-${preset.width}`} value={`${preset.center}:${preset.width}`}>{preset.name} · C {preset.center} / W {preset.width}</option>)}</select></label>
+          {dicomProfile.number_of_frames > 1 && <><label>{language === "en" ? "Frame" : "Frame"}<input type="range" min="0" max={dicomProfile.number_of_frames - 1} value={dicomFrame} onChange={event => setDicomFrame(Number(event.target.value))} /><span>{dicomFrame + 1}/{dicomProfile.number_of_frames}</span></label><small>{language === "en" ? "AI analysis and PNG exports use frame 1. Return to frame 1 to run analysis; annotations on other frames remain in the review JSON." : "Analisis AI dan ekspor PNG memakai frame 1. Kembali ke frame 1 untuk analisis; anotasi pada frame lain tetap tersedia di JSON review."}</small></>}
+          {dicomProfile.supports_window_level && <><label>{language === "en" ? "Window preset" : "Preset window"}<select value={windowCenter != null && windowWidth != null ? `${windowCenter}:${windowWidth}` : "auto"} onChange={event => { if (event.target.value === "auto") { setWindowCenter(undefined); setWindowWidth(undefined); } else { const [center, width] = event.target.value.split(":").map(Number); setWindowCenter(center); setWindowWidth(width); } }}><option value="auto">Auto VOI LUT</option>{dicomProfile.window_presets.map(preset => <option key={`${preset.name}-${preset.center}-${preset.width}`} value={`${preset.center}:${preset.width}`}>{preset.name} · C {preset.center} / W {preset.width}</option>)}</select></label>
           <label>C<input type="number" value={windowCenter ?? ""} onChange={event => setWindowCenter(event.target.value === "" ? undefined : Number(event.target.value))} /></label>
-          <label>W<input type="number" min="1" value={windowWidth ?? ""} onChange={event => setWindowWidth(event.target.value === "" ? undefined : Number(event.target.value))} /></label>
+          <label>W<input type="number" min="1" value={windowWidth ?? ""} onChange={event => setWindowWidth(event.target.value === "" ? undefined : Number(event.target.value))} /></label></>}
           <label><input type="checkbox" checked={dicomInvert} onChange={event => setDicomInvert(event.target.checked)} />{language === "en" ? "Invert" : "Inversi"}</label>
           {dicomProfile.pixel_spacing && <small>{language === "en" ? "Calibrated" : "Terkalibrasi"}: {dicomProfile.pixel_spacing.row_mm} × {dicomProfile.pixel_spacing.column_mm} mm/px</small>}
         </div>}
         <div className="imageStage">
           {displayedPreview ? <div className="imageWrap" style={{ transform: `scale(${zoom}) rotate(${rotation}deg) scaleX(${flipHorizontal ? -1 : 1}) scaleY(${flipVertical ? -1 : 1})`, filter: `brightness(${brightness}%) contrast(${contrast}%)` }}>
             <PreviewImageWithOverlay
+              key={JSON.stringify([activeCase?.case_id, activeImage?.image_id, dicomFrame])}
               preview={displayedPreview}
               originalImageWidth={Number(activeImage?.width || activeCase?.metadata?.width || activeCase?.metadata?.Columns || 0)}
               originalImageHeight={Number(activeImage?.height || activeCase?.metadata?.height || activeCase?.metadata?.Rows || 0)}
+              pixelSpacing={dicomProfile?.pixel_spacing}
               annotations={showAnn ? overlayAnnotations : []}
               showLabels={showLabels}
               showConf={showConf}
@@ -1035,11 +1190,14 @@ export function ReadingRoom(props: {
         </div>
         <label className="secondaryToolSelect"><span>{language === "en" ? "More tools" : "Alat lainnya"}</span><select value={(["AI Chat", "Trust", "DICOM Safety"] as WorkspaceTab[]).includes(sideTab) ? sideTab : ""} onChange={event => event.target.value && setSideTab(event.target.value as WorkspaceTab)}><option value="">{language === "en" ? "Choose only when needed…" : "Pilih hanya saat dibutuhkan…"}</option>{(["AI Chat", "Trust", "DICOM Safety"] as WorkspaceTab[]).map(tab => <option value={tab} key={tab}>{workspaceTabText(tab, language)}</option>)}</select></label>
         {busy && <div className="warn">{copy.processing}</div>}
-        {error && <div className="warn">{error}</div>}
+        {error && <div className="warn" role="alert">{error}</div>}
+        {saveSession.failed && <div className="warn" role="alert"><p>{language === "en" ? "Your edits are still visible here, but saving and exporting are paused until you load the latest saved case." : "Edit Anda masih terlihat di sini, tetapi penyimpanan dan ekspor ditunda sampai kasus tersimpan terbaru dimuat."}</p><button disabled={busy} onClick={() => void reloadSavedCase()}>{language === "en" ? "Discard unsaved edits and load latest" : "Buang edit yang belum tersimpan dan muat versi terbaru"}</button></div>}
         {sideTab === "AI Output" && (analysis ? <AnalysisView analysis={analysis} /> : <p>{copy.noAnalysis}</p>)}
         {sideTab === "Result Cards" && <ResultCardsPanel
+          key={JSON.stringify([activeCase.case_id, activeImage?.image_id])}
           activeCase={activeCase}
-          setActiveCase={setActiveCase}
+          setActiveCase={applyCase}
+          persistCase={saveReviewedCase}
           analysis={analysis}
           setAnalysis={setAnalysis}
           selectedCardId={selectedResultCardId}
@@ -1048,7 +1206,9 @@ export function ReadingRoom(props: {
           onFocusReport={focusReportStatement}
         />}
         {sideTab === "Annotations" && <AnnotationPanel
+          key={JSON.stringify([activeCase.case_id, activeImage?.image_id, dicomFrame])}
           activeCase={activeCase}
+          beforeExport={beforeExport}
           annotations={currentAnnotations}
           pixelSpacing={dicomProfile?.pixel_spacing}
           selectedId={selectedAnnotationId}
@@ -1066,14 +1226,16 @@ export function ReadingRoom(props: {
           onBatchReview={reviewAnnotationBatch}
         />}
         {sideTab === "Report" && <ReportPage
+          key={JSON.stringify([activeCase.case_id, activeImage?.image_id, dicomFrame])}
           activeCase={activeCase}
+          beforeExport={beforeExport}
           analysis={analysis}
           annotations={currentAnnotations}
           selectedStatementId={selectedReportStatementId}
           onFocusAnnotation={selectAnnotation}
           onFocusResultCard={focusResultCard}
         />}
-        {sideTab === "AI Chat" && <ChatPanel activeCase={activeCase} setActiveCase={setActiveCase} />}
+        {sideTab === "AI Chat" && <ChatPanel activeCase={activeCase} setActiveCase={applyCase} beforeSend={beforeExport} />}
         {sideTab === "Trust" && <TrustPanel activeCase={activeCase} analysis={analysis} />}
         {sideTab === "DICOM Safety" && <DicomSafetyPanel activeCase={activeCase} image={activeImage} />}
         </>}
@@ -1198,6 +1360,7 @@ function PreviewImageWithOverlay(props: {
   preview: string;
   originalImageWidth: number;
   originalImageHeight: number;
+  pixelSpacing?: PixelSpacing | null;
   annotations: Annotation[];
   showLabels: boolean;
   showConf: boolean;
@@ -1207,7 +1370,7 @@ function PreviewImageWithOverlay(props: {
   onCreate: (coordinate: Annotation["coordinate"], originalWidth: number, originalHeight: number) => void;
   onCoordinateChange: (id: string, coordinate: Annotation["coordinate"], action: "moved" | "resized") => void;
 }) {
-  const { preview, originalImageWidth, originalImageHeight, annotations, showLabels, showConf, tool, selectedId, onSelect, onCreate, onCoordinateChange } = props;
+  const { preview, originalImageWidth, originalImageHeight, pixelSpacing, annotations, showLabels, showConf, tool, selectedId, onSelect, onCreate, onCoordinateChange } = props;
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [size, setSize] = useState<ImageBoxSize | null>(null);
 
@@ -1249,6 +1412,7 @@ function PreviewImageWithOverlay(props: {
       annotations={annotations}
       originalImageWidth={originalImageWidth}
       originalImageHeight={originalImageHeight}
+      pixelSpacing={pixelSpacing}
       showLabels={showLabels}
       showConf={showConf}
       imageSize={size}
@@ -1290,13 +1454,14 @@ function hasEllipseCoordinate(annotation: Annotation) {
 }
 
 function hasLengthCoordinate(annotation: Annotation) {
-  return annotation.coordinate?.type === "length" && coordinatePoints(annotation.coordinate).length === 2;
+  return annotation.coordinate?.type === "length" && measureAnnotation(annotation) !== null;
 }
 
 function InteractiveAnnotationOverlay(props: {
   annotations: Annotation[];
   originalImageWidth: number;
   originalImageHeight: number;
+  pixelSpacing?: PixelSpacing | null;
   showLabels: boolean;
   showConf: boolean;
   imageSize: ImageBoxSize | null;
@@ -1306,7 +1471,8 @@ function InteractiveAnnotationOverlay(props: {
   onCreate: (coordinate: Annotation["coordinate"], originalWidth: number, originalHeight: number) => void;
   onCoordinateChange: (id: string, coordinate: Annotation["coordinate"], action: "moved" | "resized") => void;
 }) {
-  const { annotations, originalImageWidth, originalImageHeight, showLabels, showConf, imageSize, tool, selectedId, onSelect, onCreate, onCoordinateChange } = props;
+  const { language } = useUiLanguage();
+  const { annotations, originalImageWidth, originalImageHeight, pixelSpacing, showLabels, showConf, imageSize, tool, selectedId, onSelect, onCreate, onCoordinateChange } = props;
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<AnnotationDrag | null>(null);
   const [draft, setDraft] = useState<{ id?: string; coordinate: Annotation["coordinate"] } | null>(null);
@@ -1317,15 +1483,17 @@ function InteractiveAnnotationOverlay(props: {
   const displayHeight = imageSize?.displayHeight || 1;
 
   useEffect(() => {
-    if (tool !== "polygon") setPolygonDraft([]);
+    setPolygonDraft([]);
+    dragRef.current = null;
+    setDraft(null);
   }, [tool, originalWidth, originalHeight]);
 
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (tool !== "polygon") return;
       const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select")) return;
-      if (event.key === "Escape") setPolygonDraft([]);
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      if (event.key === "Escape") { setPolygonDraft([]); dragRef.current = null; setDraft(null); }
+      if (tool !== "polygon" && tool !== "angle") return;
       if (event.key === "Enter") finalizePolygon();
       if (event.key === "Backspace") {
         event.preventDefault();
@@ -1337,26 +1505,52 @@ function InteractiveAnnotationOverlay(props: {
   }, [tool, polygonDraft, originalWidth, originalHeight]);
 
   function point(event: React.PointerEvent<SVGSVGElement | SVGElement>) {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
+    const svg = svgRef.current;
+    if (!svg) return null;
+    let x: number;
+    let y: number;
+    if (typeof svg.getScreenCTM === "function") {
+      // SVG screen coordinates include the parent's CSS rotation, flips, and zoom.
+      const matrix = svg.getScreenCTM();
+      if (!matrix) return null;
+      let inverse: DOMMatrix;
+      try { inverse = matrix.inverse(); } catch { return null; }
+      x = (inverse.a * event.clientX + inverse.c * event.clientY + inverse.e) * originalWidth / displayWidth;
+      y = (inverse.b * event.clientX + inverse.d * event.clientY + inverse.f) * originalHeight / displayHeight;
+    } else {
+      const rect = svg.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) return null;
+      x = (event.clientX - rect.left) * originalWidth / rect.width;
+      y = (event.clientY - rect.top) * originalHeight / rect.height;
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     return {
-      x: Math.max(0, Math.min(originalWidth, (event.clientX - rect.left) * originalWidth / rect.width)),
-      y: Math.max(0, Math.min(originalHeight, (event.clientY - rect.top) * originalHeight / rect.height))
+      x: Math.max(0, Math.min(originalWidth, x)),
+      y: Math.max(0, Math.min(originalHeight, y))
     };
   }
 
   function startDraw(event: React.PointerEvent<SVGSVGElement>) {
+    if (event.button !== 0) return;
     if (event.target !== event.currentTarget) return;
     if (tool === "select") {
       onSelect(null);
       return;
     }
     const p = point(event);
+    if (!p) return;
     if (tool === "point") {
       onCreate({ type: "point", x: p.x, y: p.y, width: 0, height: 0, points: [[p.x, p.y]], coordinate_space: "original_image" }, originalWidth, originalHeight);
       return;
     }
-    if (tool === "polygon") {
+    if (tool === "polygon" || tool === "angle") {
+      if (tool === "angle" && polygonDraft.length === 2) {
+        const points: [number, number][] = [...polygonDraft, [p.x, p.y]];
+        if (!isValidAnglePoints(points)) return;
+        onCreate({ type: "angle", ...polygonBounds(points), points, coordinate_space: "original_image" }, originalWidth, originalHeight);
+        setPolygonDraft([]);
+        return;
+      }
       setPolygonDraft(current => [...current, [p.x, p.y]]);
       return;
     }
@@ -1367,6 +1561,7 @@ function InteractiveAnnotationOverlay(props: {
   }
 
   function finalizePolygon() {
+    if (tool !== "polygon") return;
     const unique = polygonDraft.filter((item, index, list) => index === 0 || Math.hypot(item[0] - list[index - 1][0], item[1] - list[index - 1][1]) >= 2);
     if (unique.length < 3 || polygonArea(unique) < 4) return;
     const bounds = polygonBounds(unique);
@@ -1376,9 +1571,11 @@ function InteractiveAnnotationOverlay(props: {
 
   function startMove(event: React.PointerEvent<SVGElement>, annotation: Annotation) {
     event.stopPropagation();
+    if (event.button !== 0) return;
     onSelect(annotation.id);
-    if (tool !== "select" || annotation.locked || !(hasBoxCoordinate(annotation) || hasEllipseCoordinate(annotation) || hasLengthCoordinate(annotation) || hasPointCoordinate(annotation) || hasPolygonCoordinate(annotation))) return;
+    if (tool !== "select" || annotation.locked || !(hasBoxCoordinate(annotation) || hasEllipseCoordinate(annotation) || hasLengthCoordinate(annotation) || hasAngleCoordinate(annotation) || hasPointCoordinate(annotation) || hasPolygonCoordinate(annotation))) return;
     const p = point(event);
+    if (!p) return;
     dragRef.current = { kind: "move", id: annotation.id, startX: p.x, startY: p.y, startCoordinate: { ...annotation.coordinate } };
     setDraft({ id: annotation.id, coordinate: { ...annotation.coordinate } });
     svgRef.current?.setPointerCapture(event.pointerId);
@@ -1386,9 +1583,11 @@ function InteractiveAnnotationOverlay(props: {
 
   function startVertex(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, vertexIndex: number) {
     event.stopPropagation();
+    if (event.button !== 0) return;
     onSelect(annotation.id);
-    if (tool !== "select" || annotation.locked || !hasPolygonCoordinate(annotation)) return;
+    if (tool !== "select" || annotation.locked || !(hasPolygonCoordinate(annotation) || hasLengthCoordinate(annotation) || hasAngleCoordinate(annotation))) return;
     const p = point(event);
+    if (!p) return;
     dragRef.current = { kind: "vertex", id: annotation.id, vertexIndex, startX: p.x, startY: p.y, startCoordinate: { ...annotation.coordinate, points: coordinatePoints(annotation.coordinate) } };
     setDraft({ id: annotation.id, coordinate: { ...annotation.coordinate, points: coordinatePoints(annotation.coordinate) } });
     svgRef.current?.setPointerCapture(event.pointerId);
@@ -1396,8 +1595,10 @@ function InteractiveAnnotationOverlay(props: {
 
   function startResize(event: React.PointerEvent<SVGRectElement>, annotation: Annotation, handle: AnnotationDrag["handle"]) {
     event.stopPropagation();
+    if (event.button !== 0) return;
     if (annotation.locked || !hasBoxCoordinate(annotation)) return;
     const p = point(event);
+    if (!p) return;
     dragRef.current = { kind: "resize", id: annotation.id, handle, startX: p.x, startY: p.y, startCoordinate: { ...annotation.coordinate } };
     setDraft({ id: annotation.id, coordinate: { ...annotation.coordinate } });
     svgRef.current?.setPointerCapture(event.pointerId);
@@ -1407,6 +1608,7 @@ function InteractiveAnnotationOverlay(props: {
     const drag = dragRef.current;
     if (!drag) return;
     const p = point(event);
+    if (!p) return;
     if (drag.kind === "draw") {
       const type = draft?.coordinate.type || "bbox";
       setDraft({ coordinate: {
@@ -1422,7 +1624,7 @@ function InteractiveAnnotationOverlay(props: {
     }
     const start = drag.startCoordinate;
     if (!start || !drag.id) return;
-    if (drag.kind === "vertex" && start.type === "polygon") {
+    if (drag.kind === "vertex" && ["polygon", "length", "angle"].includes(start.type)) {
       const points = coordinatePoints(start);
       if (drag.vertexIndex == null || !points[drag.vertexIndex]) return;
       points[drag.vertexIndex] = [p.x, p.y];
@@ -1446,7 +1648,7 @@ function InteractiveAnnotationOverlay(props: {
         setDraft({ id: drag.id, coordinate: { ...start, ...polygonBounds(movedPoints), points: movedPoints } });
         return;
       }
-      if (start.type === "length") {
+      if (start.type === "length" || start.type === "angle") {
         const points = coordinatePoints(start);
         const bounds = polygonBounds(points);
         const dx = Math.max(-bounds.x, Math.min(originalWidth - bounds.x - bounds.width, p.x - drag.startX));
@@ -1481,7 +1683,16 @@ function InteractiveAnnotationOverlay(props: {
       const validArea = draft.coordinate.type !== "length" && draft.coordinate.width >= 4 && draft.coordinate.height >= 4;
       if (validLength || validArea) onCreate(draft.coordinate, originalWidth, originalHeight);
     } else if (drag.id) {
+      if (JSON.stringify(draft.coordinate) === JSON.stringify(drag.startCoordinate)) {
+        setDraft(null);
+        return;
+      }
       if (draft.coordinate.type === "polygon" && !isValidPolygonPoints(coordinatePoints(draft.coordinate))) {
+        setDraft(null);
+        return;
+      }
+      if ((draft.coordinate.type === "angle" && !isValidAnglePoints(coordinatePoints(draft.coordinate))) ||
+          (draft.coordinate.type === "length" && !measureAnnotation({ coordinate: draft.coordinate }))) {
         setDraft(null);
         return;
       }
@@ -1563,7 +1774,20 @@ function InteractiveAnnotationOverlay(props: {
       return <g key={annotation.id} className={annotation.review_status === "rejected" ? "rejectedAnnotation" : ""}>
         <line className={`annotationLength ${selected ? "selected" : ""}`} x1={points[0][0]} y1={points[0][1]} x2={points[1][0]} y2={points[1][1]} stroke={color} onPointerDown={event => startMove(event, annotation)} />
         <circle cx={points[0][0]} cy={points[0][1]} r={4} fill={color} /><circle cx={points[1][0]} cy={points[1][1]} r={4} fill={color} />
+        {selected && !annotation.locked && points.map((item, index) => <circle key={index} className="measurementVertex polygonVertex" cx={item[0]} cy={item[1]} r={6} fill={color} onPointerDown={event => startVertex(event, annotation, index)} />)}
         {showLabels && <text className="annotationLabel" x={(points[0][0] + points[1][0]) / 2 + 5} y={(points[0][1] + points[1][1]) / 2 - 5} fill={color}>{annotation.label}</text>}
+      </g>;
+    })}
+    {annotations.filter(annotation => annotation.visible !== false && hasAngleCoordinate(annotation)).map(annotation => {
+      const coordinate = draft?.id === annotation.id ? draft.coordinate : annotation.coordinate;
+      const points = displayShapePoints(annotation, coordinate);
+      const selected = annotation.id === selectedId;
+      const color = annotationColor(annotation);
+      const measurement = measureAnnotation({ coordinate }, pixelSpacing);
+      return <g key={annotation.id} className={annotation.review_status === "rejected" ? "rejectedAnnotation" : ""}>
+        <polyline className={`annotationAngle ${selected ? "selected" : ""}`} points={points.map(item => item.join(",")).join(" ")} stroke={color} onPointerDown={event => startMove(event, annotation)} />
+        {points.map((item, index) => <circle key={index} className={selected && !annotation.locked ? "measurementVertex polygonVertex" : undefined} cx={item[0]} cy={item[1]} r={selected && !annotation.locked ? 6 : 4} fill={color} onPointerDown={event => startVertex(event, annotation, index)} />)}
+        {showLabels && <text className="annotationLabel" x={points[1][0] + 7} y={Math.max(14, points[1][1] - 7)} fill={color}>{annotation.label}{measurement ? ` · ${measurement.value}°` : ""}</text>}
       </g>;
     })}
     {annotations.filter(annotation => annotation.visible !== false && hasEllipseCoordinate(annotation)).map(annotation => {
@@ -1613,10 +1837,10 @@ function InteractiveAnnotationOverlay(props: {
       if (draft.coordinate.type === "ellipse") return <ellipse className="annotationEllipse manualDraft" cx={box.x + box.width / 2} cy={box.y + box.height / 2} rx={box.width / 2} ry={box.height / 2} />;
       return <rect className="annotationRect manualDraft" x={box.x} y={box.y} width={box.width} height={box.height} />;
     })()}
-    {polygonDraft.length > 0 && <g className="polygonDraft">
+    {polygonDraft.length > 0 && <g className={`polygonDraft ${tool === "angle" ? "angleDraft" : ""}`}>
       <polyline points={polygonDraft.map(item => `${item[0] * displayWidth / originalWidth},${item[1] * displayHeight / originalHeight}`).join(" ")} />
       {polygonDraft.map((item, index) => <circle key={index} cx={item[0] * displayWidth / originalWidth} cy={item[1] * displayHeight / originalHeight} r={4} />)}
-      <text x={polygonDraft[0][0] * displayWidth / originalWidth + 6} y={Math.max(14, polygonDraft[0][1] * displayHeight / originalHeight - 8)}>Double-click or Enter to finish</text>
+      <text x={polygonDraft[0][0] * displayWidth / originalWidth + 6} y={Math.max(14, polygonDraft[0][1] * displayHeight / originalHeight - 8)}>{tool === "angle" ? (polygonDraft.length === 1 ? (language === "en" ? "Click vertex, then second arm · Esc to cancel" : "Klik titik sudut, lalu lengan kedua · Esc untuk batal") : (language === "en" ? "Click second arm · Esc to cancel" : "Klik lengan kedua · Esc untuk batal")) : (language === "en" ? "Double-click or Enter to finish" : "Klik dua kali atau Enter untuk selesai")}</text>
     </g>}
   </svg>;
 }
@@ -1666,6 +1890,7 @@ function annotationCoordinateText(annotation: Annotation) {
 function ResultCardsPanel(props: {
   activeCase: CaseRecord | null;
   setActiveCase: (c: CaseRecord | null) => void;
+  persistCase: (c: CaseRecord) => Promise<CaseRecord>;
   analysis: AnalysisResult | null;
   setAnalysis: (a: AnalysisResult | null) => void;
   selectedCardId: string | null;
@@ -1678,8 +1903,6 @@ function ResultCardsPanel(props: {
   const currentAnalysis = analysis || activeCase?.analysis || null;
   const cards = asList<ResultCard>(currentAnalysis?.result_cards);
   const differential = asList<DifferentialCandidate>(currentAnalysis?.differential_diagnosis);
-  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const saveVersionRef = useRef(0);
   const [saveError, setSaveError] = useState("");
 
   async function updateCard(cardId: string, patch: Partial<ResultCard>) {
@@ -1698,18 +1921,8 @@ function ResultCardsPanel(props: {
     setAnalysis(syncedAnalysis);
     setActiveCase(nextCase);
     setSaveError("");
-    const version = ++saveVersionRef.current;
-    saveQueueRef.current = saveQueueRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        const savedCase = await api.saveCase(nextCase);
-        if (version === saveVersionRef.current) {
-          setActiveCase(savedCase);
-          setAnalysis(savedCase.analysis || syncedAnalysis);
-        }
-      })
-      .catch(exc => { setSaveError(`${language === "en" ? "Result card was not saved" : "Kartu hasil belum tersimpan"}: ${String(exc)}`); });
-    await saveQueueRef.current;
+    try { await props.persistCase(nextCase); }
+    catch (exc) { setSaveError(`${language === "en" ? "Result card was not saved" : "Kartu hasil belum tersimpan"}: ${String(exc)}`); }
   }
 
   return <section className="resultCardsPanel">
@@ -1777,6 +1990,7 @@ function ResultCardsPanel(props: {
 
 function AnnotationPanel(props: {
   activeCase: CaseRecord | null;
+  beforeExport: () => Promise<void>;
   annotations: Annotation[];
   pixelSpacing?: { row_mm: number; column_mm: number } | null;
   selectedId: string | null;
@@ -1801,21 +2015,37 @@ function AnnotationPanel(props: {
   const cardList = asList<ResultCard>(resultCards);
   const [reviewExport, setReviewExport] = useState<AnnotationReviewExport | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState("");
   async function exportPng() {
-    if (!activeCase) return;
-    const res = await api.exportAnnotations(activeCase.case_id);
-    alert(`Annotated PNG: ${res.path}`);
+    if (!activeCase || exportBusy) return;
+    setExportBusy(true);
+    setExportError("");
+    try {
+      await props.beforeExport();
+      const res = await api.exportAnnotations(activeCase.case_id);
+      alert(`Annotated PNG: ${res.path}`);
+    } catch (exc) {
+      setExportError(String(exc));
+    } finally {
+      setExportBusy(false);
+    }
   }
   async function exportReviewPackage() {
-    if (!activeCase) return;
+    if (!activeCase || exportBusy) return;
     setExportBusy(true);
+    setExportError("");
+    setReviewExport(null);
     try {
+      await props.beforeExport();
       setReviewExport(await api.exportAnnotationReview(activeCase.case_id));
+    } catch (exc) {
+      setExportError(String(exc));
     } finally {
       setExportBusy(false);
     }
   }
   return <section className="annotationPanel">
+    {exportError && <div className="warn" role="alert">{exportError}</div>}
     <div className="referenceHeader compact">
       <Layers size={18} />
       <div>
@@ -1845,7 +2075,7 @@ function AnnotationPanel(props: {
       <button disabled={!visibleUnreviewedAiIds.length} onClick={() => onBatchReview(visibleUnreviewedAiIds, "rejected")}><XCircle size={15} />{language === "en" ? "Reject visible" : "Tolak yang terlihat"}</button>
     </div>
     <div className="annotationExportActions">
-      <button onClick={exportPng} disabled={!activeCase || !annotationList.length}><Download size={16} />{language === "en" ? "Reviewed PNG" : "PNG hasil tinjauan"}</button>
+      <button onClick={exportPng} disabled={!activeCase || !annotationList.length || exportBusy}><Download size={16} />{language === "en" ? "Reviewed PNG" : "PNG hasil tinjauan"}</button>
       <button onClick={exportReviewPackage} disabled={!activeCase || !annotationList.length || exportBusy}><Archive size={16} />{exportBusy ? (language === "en" ? "Exporting..." : "Mengekspor...") : (language === "en" ? "AI vs reviewed package" : "Paket AI vs hasil tinjauan")}</button>
     </div>
     {reviewExport && <div className="reviewExportSummary">
@@ -1858,6 +2088,7 @@ function AnnotationPanel(props: {
     {visibleAnnotationList.length ? <div className="annotationList">
       {visibleAnnotationList.map(annotation => {
         const selected = annotation.id === selectedId;
+        const measurement = measureAnnotation(annotation, pixelSpacing);
         const linkedResultIds = textList(annotation.linked_result_card_ids);
         const origin = annotationOrigin(annotation);
         const originText = origin === "ai" ? (language === "en" ? "AI-generated" : "Dibuat AI") : origin === "reviewer" ? (language === "en" ? "Reviewer-created" : "Dibuat reviewer") : (language === "en" ? "Guidance region" : "Area panduan");
@@ -1871,7 +2102,7 @@ function AnnotationPanel(props: {
             <span className="annotationState"><strong className={`annotationConfidence ${origin}`}>{origin === "ai" ? `${annotationConfidencePercent(annotation.confidence)}%` : origin === "reviewer" ? (language === "en" ? "manual" : "manual") : (language === "en" ? "guide" : "panduan")}</strong>{annotation.visible ? <Eye size={15} /> : <EyeOff size={15} />}{reviewStatusText(annotation.review_status, language)}</span>
           </button>
           <code>{annotationCoordinateText(annotation)}</code>
-          {measureAnnotation(annotation, pixelSpacing) && <strong className="annotationMeasurement">{measureAnnotation(annotation, pixelSpacing)!.value} {measureAnnotation(annotation, pixelSpacing)!.unit}{!pixelSpacing ? ` (${language === "en" ? "uncalibrated pixels" : "piksel tanpa kalibrasi"})` : ""}</strong>}
+          {measurement && <strong className="annotationMeasurement">{measurement.value} {measurement.unit}{measurement.unit === "px" || measurement.unit === "px²" ? ` (${language === "en" ? "uncalibrated pixels" : "piksel tanpa kalibrasi"})` : ""}</strong>}
           {selected && <div className="annotationEditor">
             <form className="annotationLabelForm" onSubmit={event => {
               event.preventDefault();
@@ -1925,7 +2156,7 @@ function AnnotationPanel(props: {
             <div className="annotationActions">
               <button title={annotation.visible ? (language === "en" ? "Hide annotation" : "Sembunyikan anotasi") : (language === "en" ? "Show annotation" : "Tampilkan anotasi")} onClick={() => onUpdate(annotation.id, { visible: !annotation.visible }, "visibility", annotation.visible ? "Annotation hidden by reviewer." : "Annotation shown by reviewer.")}>{annotation.visible ? <EyeOff size={16} /> : <Eye size={16} />}{annotation.visible ? (language === "en" ? "Hide" : "Sembunyikan") : (language === "en" ? "Show" : "Tampilkan")}</button>
               <button title={annotation.locked ? (language === "en" ? "Unlock geometry" : "Buka kunci geometri") : (language === "en" ? "Lock geometry" : "Kunci geometri")} onClick={() => onUpdate(annotation.id, { locked: !annotation.locked }, "locked", annotation.locked ? "Annotation unlocked." : "Annotation locked.")}>{annotation.locked ? <Unlock size={16} /> : <Lock size={16} />}{annotation.locked ? (language === "en" ? "Unlock" : "Buka kunci") : (language === "en" ? "Lock" : "Kunci")}</button>
-              {annotation.original_coordinate && <button title={language === "en" ? "Restore original AI geometry" : "Pulihkan geometri AI asli"} onClick={() => onUpdate(annotation.id, { coordinate: { ...annotation.original_coordinate! } }, "resized", "Original annotation geometry restored.")}><RotateCcw size={16} />{language === "en" ? "Restore" : "Pulihkan"}</button>}
+              {annotation.original_coordinate && <button disabled={annotation.locked} title={language === "en" ? "Restore original AI geometry" : "Pulihkan geometri AI asli"} onClick={() => onUpdate(annotation.id, { coordinate: { ...annotation.original_coordinate! } }, "resized", "Original annotation geometry restored.")}><RotateCcw size={16} />{language === "en" ? "Restore" : "Pulihkan"}</button>}
               {String(annotation.source || "").includes("manual") && <button className="dangerAction" title={language === "en" ? "Delete manual annotation" : "Hapus anotasi manual"} onClick={() => onDelete(annotation.id)}><Trash2 size={16} />{language === "en" ? "Delete" : "Hapus"}</button>}
             </div>
             <small>{friendlyTechnicalText(annotation.explanation, language)}</small>
@@ -2081,25 +2312,43 @@ function DicomSafetyPanel({ activeCase, image }: { activeCase: CaseRecord | null
   </section>;
 }
 
-function ChatPanel({ activeCase, setActiveCase }: { activeCase: CaseRecord | null; setActiveCase: (c: CaseRecord | null) => void }) {
+function ChatPanel({ activeCase, setActiveCase, beforeSend }: { activeCase: CaseRecord | null; setActiveCase: (c: CaseRecord | null) => void; beforeSend: () => Promise<void> }) {
   const { copy, language } = useUiLanguage();
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [runtimeState, setRuntimeState] = useState<{ backend: string; fallback: boolean } | null>(null);
+  const currentCaseRef = useRef(activeCase);
+  currentCaseRef.current = activeCase;
+  const requestRef = useRef(0);
+  useEffect(() => {
+    setMsg("");
+    setError("");
+    setBusy(false);
+    setRuntimeState(null);
+    return () => { requestRef.current += 1; };
+  }, [activeCase?.case_id]);
   async function send() {
-    if (!activeCase || !msg.trim()) return;
+    if (!activeCase || !msg.trim() || busy) return;
+    const requestId = ++requestRef.current;
     setBusy(true);
     setError("");
     try {
+      await beforeSend();
+      if (requestId !== requestRef.current || currentCaseRef.current?.case_id !== activeCase.case_id) return;
       const res = await api.chat(activeCase.case_id, msg, language);
-      setActiveCase({ ...activeCase, chat_history: res.history });
+      const currentCase = currentCaseRef.current;
+      if (requestId !== requestRef.current || currentCase?.case_id !== activeCase.case_id) return;
+      const revision = res.revision ?? res.case?.revision;
+      if (revision === undefined || currentCase.revision === undefined || revision >= currentCase.revision) {
+        setActiveCase(res.case && currentCase === activeCase ? res.case : { ...currentCase, chat_history: res.history, revision: revision ?? currentCase.revision });
+      }
       setRuntimeState({ backend: res.backend, fallback: res.fallback });
       setMsg("");
     } catch (exc) {
-      setError(String(exc));
+      if (requestId === requestRef.current) setError(String(exc));
     } finally {
-      setBusy(false);
+      if (requestId === requestRef.current) setBusy(false);
     }
   }
   return <section className="chat">
@@ -2115,6 +2364,7 @@ function ChatPanel({ activeCase, setActiveCase }: { activeCase: CaseRecord | nul
 
 function ReportPage(props: {
   activeCase: CaseRecord | null;
+  beforeExport: () => Promise<void>;
   analysis: AnalysisResult | null;
   annotations: Annotation[];
   selectedStatementId: string | null;
@@ -2124,15 +2374,37 @@ function ReportPage(props: {
   const { activeCase, analysis, annotations, selectedStatementId, onFocusAnnotation, onFocusResultCard } = props;
   const { language: uiLanguage, copy } = useUiLanguage();
   const language = uiLanguage;
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState("");
+  async function exportFile(action: () => Promise<{ path: string }>, label: string) {
+    if (exportBusy || !activeCase) return;
+    setExportBusy(true);
+    setExportError("");
+    try {
+      await props.beforeExport();
+      const res = await action();
+      alert(`${label}: ${res.path}`);
+    } catch (exc) {
+      setExportError(String(exc));
+    } finally {
+      setExportBusy(false);
+    }
+  }
   async function exportFmt(format: string) {
     if (!activeCase) return;
-    const res = await api.exportReport(activeCase.case_id, format, language);
-    alert(`${copy.exportDone}: ${res.path}`);
+    await exportFile(() => api.exportReport(activeCase.case_id, format, language), copy.exportDone);
   }
   async function exportPng() {
     if (!activeCase) return;
-    const res = await api.exportAnnotations(activeCase.case_id);
-    alert(`Annotated PNG: ${res.path}`);
+    await exportFile(() => api.exportAnnotations(activeCase.case_id), "Annotated PNG");
+  }
+  async function copyReport() {
+    setExportError("");
+    try {
+      await navigator.clipboard.writeText(reportText);
+    } catch (exc) {
+      setExportError(String(exc));
+    }
   }
   const report = analysis?.report || activeCase?.report;
   const resultCards = asList<ResultCard>(analysis?.result_cards || activeCase?.analysis?.result_cards);
@@ -2149,6 +2421,7 @@ function ReportPage(props: {
   const reportText = report ? `${language === "en" ? "Case identity" : "Identitas kasus"}: ${activeCase?.case_id}\n${sections.map(section => `${language === "en" ? section.enLabel : section.idLabel}: ${section.value}`).join("\n")}\n${language === "en" ? "Note" : "Catatan"}: ${report.watermark}` : "";
   return <section className="report">
     <div className="row"><h2>{copy.reportTitle}</h2><span>{copy.language}: {language === "en" ? copy.english : copy.indonesian}</span></div>
+    {exportError && <div className="warn" role="alert">{exportError}</div>}
     {report && report.language && report.language !== language && <div className="warn">{language === "en" ? "This saved report was generated in another language. Run the AI workflow again to regenerate every clinical section in English." : "Laporan tersimpan ini dibuat dalam bahasa lain. Jalankan ulang alur AI agar seluruh bagian klinis dibuat dalam bahasa Indonesia."}</div>}
     {resultCards.length > 0 && <div className="reportResultCards">
       {resultCards.map(card => <button key={card.id} onClick={() => onFocusResultCard(card.id)}><b>{friendlyTechnicalText(findingText(card), uiLanguage)}</b><span>{card.status} / {scoreText(card)} / {card.review_status}</span></button>)}
@@ -2176,7 +2449,7 @@ function ReportPage(props: {
       })}
       <small>{report.watermark}</small>
     </div> : <p>{copy.reportEmpty}</p>}
-    <div className="actions"><button onClick={() => navigator.clipboard.writeText(reportText)}>{copy.reportCopy}</button><button onClick={() => exportFmt("markdown")}><Download size={16} />Markdown</button><button onClick={() => exportFmt("pdf")}><Download size={16} />PDF</button><button onClick={() => exportFmt("json")}><Download size={16} />JSON</button><button onClick={exportPng}>Annotated PNG</button></div>
+    <div className="actions"><button onClick={copyReport} disabled={!report}>{copy.reportCopy}</button><button onClick={() => exportFmt("markdown")} disabled={exportBusy || !activeCase}><Download size={16} />Markdown</button><button onClick={() => exportFmt("pdf")} disabled={exportBusy || !activeCase}><Download size={16} />PDF</button><button onClick={() => exportFmt("json")} disabled={exportBusy || !activeCase}><Download size={16} />JSON</button><button onClick={exportPng} disabled={exportBusy || !activeCase}>Annotated PNG</button></div>
   </section>;
 }
 
@@ -2505,12 +2778,16 @@ function LocalRegistryPanel({
   </div>;
 }
 
-function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase: CaseRecord | null; analysis: AnalysisResult | null; onOpenCase: (caseId: string, imageId?: string) => Promise<void> }) {
+export function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase: CaseRecord | null; analysis: AnalysisResult | null; onOpenCase: (caseId: string, imageId?: string) => Promise<void> }) {
   const { language } = useUiLanguage();
   const [labels, setLabels] = useState<ValidationLabel[]>([]);
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [fixturePath, setFixturePath] = useState("");
+  const [error, setError] = useState("");
+  const labelsRequest = useRef(0);
+  const mounted = useRef(false);
+  const loadedLabel = useRef<ValidationLabel | null>(null);
   const analysisReading = (analysis?.systematic_reading || {}) as Record<string, unknown>;
   const analysisFindings = asList<AnalysisResult["findings"][number]>(analysis?.findings);
   const firstAnalysisFinding = analysisFindings[0];
@@ -2519,7 +2796,8 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
   const validationImageIndex = validationImage ? validationImages.findIndex(image => image.image_id === validationImage.image_id) : -1;
   const firstReviewedAnnotation = preferredAnnotations(activeCase?.annotations, analysis?.annotations)
     .find(annotation => annotationBelongsToImage(annotation, validationImage, validationImageIndex === 0, validationImages));
-  const [labelDraft, setLabelDraft] = useState({
+  function initialLabelDraft() {
+    return {
     case_id: activeCase?.case_id || "",
     title: activeCase?.title || "",
     protocol_id: "local-research-protocol",
@@ -2536,7 +2814,7 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
     expected_body_region: analysisReading.body_region ? String(analysisReading.body_region) : "",
     quality: "unknown",
     quality_limitations: "",
-    finding_label: firstAnalysisFinding?.label || "fallback_no_confirmed_abnormality",
+    finding_label: firstAnalysisFinding?.label || "",
     finding_status: firstAnalysisFinding?.status || "uncertain",
     annotation_label: firstReviewedAnnotation?.label || "",
     annotation_type: firstReviewedAnnotation?.coordinate?.type || "bbox",
@@ -2554,31 +2832,44 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
     protocol_notes: "",
     skip_reason: "",
     notes: "",
-  });
+    };
+  }
+  const [labelDraft, setLabelDraft] = useState(initialLabelDraft);
+  const draftContext = useRef(JSON.stringify([activeCase?.case_id, validationImage?.image_id]));
 
-  useEffect(() => { api.validationLabels().then(value => setLabels(asList<ValidationLabel>(value))).catch(() => setLabels([])); }, []);
+  async function refreshLabels() {
+    const request = ++labelsRequest.current;
+    try {
+      const value = await api.validationLabels();
+      if (mounted.current && request === labelsRequest.current) setLabels(asList<ValidationLabel>(value));
+    } catch (exc) {
+      if (mounted.current && request === labelsRequest.current) throw exc;
+    }
+  }
+  function showError(exc: unknown) {
+    if (mounted.current) setError(exc instanceof Error ? exc.message : String(exc));
+  }
   useEffect(() => {
+    mounted.current = true;
+    void refreshLabels().catch(showError);
+    return () => { mounted.current = false; labelsRequest.current++; };
+  }, []);
+  useEffect(() => {
+    const context = JSON.stringify([activeCase?.case_id, validationImage?.image_id]);
+    if (context === draftContext.current) return;
+    draftContext.current = context;
+    loadedLabel.current = null;
+    setError("");
     setLabelDraft(draft => ({
-      ...draft,
-      case_id: activeCase?.case_id || draft.case_id,
-      title: activeCase?.title || draft.title,
-      expected_body_region: analysisReading.body_region ? String(analysisReading.body_region) : draft.expected_body_region,
-      finding_label: firstAnalysisFinding?.label || draft.finding_label,
-      finding_status: firstAnalysisFinding?.status || draft.finding_status,
-      annotation_label: firstReviewedAnnotation?.label || draft.annotation_label,
-      annotation_type: firstReviewedAnnotation?.coordinate?.type || draft.annotation_type,
-      annotation_x: firstReviewedAnnotation?.coordinate?.x || draft.annotation_x,
-      annotation_y: firstReviewedAnnotation?.coordinate?.y || draft.annotation_y,
-      annotation_width: firstReviewedAnnotation?.coordinate?.width || draft.annotation_width,
-      annotation_height: firstReviewedAnnotation?.coordinate?.height || draft.annotation_height,
-      source_image_id: validationImage?.image_id || draft.source_image_id,
-      source_image_index: validationImage?.index ?? draft.source_image_index,
-      source_series_id: validationImage?.series_id || draft.source_series_id,
-      source_view: validationImage?.view || draft.source_view,
+      ...initialLabelDraft(),
+      protocol_id: draft.protocol_id, dataset_name: draft.dataset_name, split: draft.split,
+      reviewer: draft.reviewer, reference_standard: draft.reference_standard,
     }));
   }, [activeCase, analysisReading.body_region, firstAnalysisFinding?.label, firstAnalysisFinding?.status, firstReviewedAnnotation, validationImage?.image_id, validationImage?.index, validationImage?.series_id, validationImage?.view]);
 
   function loadLabel(label: ValidationLabel) {
+    loadedLabel.current = label;
+    setError("");
     const expectedFindings = asList<NonNullable<ValidationLabel["expected_findings"]>[number]>(label.expected_findings);
     const expectedAnnotations = asList<NonNullable<ValidationLabel["expected_annotations"]>[number]>(label.expected_annotations);
     const firstFinding = expectedFindings[0];
@@ -2605,9 +2896,9 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
       annotation_label: firstAnnotation?.label || "",
       annotation_type: firstAnnotation?.coordinate_type || "bbox",
       annotation_required: Boolean(firstAnnotation?.required),
-      annotation_spatial: Boolean(firstAnnotation?.coordinate),
-      annotation_x: firstAnnotation?.coordinate?.x || 0,
-      annotation_y: firstAnnotation?.coordinate?.y || 0,
+      annotation_spatial: Boolean(firstAnnotation?.coordinate || firstAnnotation?.points?.length),
+      annotation_x: firstAnnotation?.coordinate?.x ?? firstAnnotation?.points?.[0]?.[0] ?? 0,
+      annotation_y: firstAnnotation?.coordinate?.y ?? firstAnnotation?.points?.[0]?.[1] ?? 0,
       annotation_width: firstAnnotation?.coordinate?.width || 0,
       annotation_height: firstAnnotation?.coordinate?.height || 0,
       annotation_min_iou: firstAnnotation?.min_iou ?? 0.3,
@@ -2624,7 +2915,10 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
   async function saveFromActiveCase() {
     const caseId = labelDraft.case_id || activeCase?.case_id;
     if (!caseId) return;
-    setBusy(true);
+    setBusy(true); setError("");
+    const existing = loadedLabel.current?.case_id === caseId ? loadedLabel.current : null;
+    const existingFindings = asList<NonNullable<ValidationLabel["expected_findings"]>[number]>(existing?.expected_findings);
+    const existingAnnotations = asList<NonNullable<ValidationLabel["expected_annotations"]>[number]>(existing?.expected_annotations);
     try {
       await api.saveValidationLabel({
         case_id: caseId,
@@ -2644,10 +2938,11 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
         expected_image_quality: {
           diagnostic_quality: labelDraft.quality,
           limitations: labelDraft.quality_limitations.split(",").map(item => item.trim()).filter(Boolean),
-          note: "",
+          note: existing?.expected_image_quality?.note || "",
         },
-        expected_findings: labelDraft.finding_label ? [{ label: labelDraft.finding_label, status: labelDraft.finding_status, note: labelDraft.notes }] : [],
-        expected_annotations: labelDraft.annotation_label ? [{
+        expected_findings: [...(labelDraft.finding_label ? [{ ...existingFindings[0], label: labelDraft.finding_label, status: labelDraft.finding_status, note: existingFindings[0]?.note ?? labelDraft.notes }] : []), ...existingFindings.slice(1)],
+        expected_annotations: [...(labelDraft.annotation_label ? [{
+          ...existingAnnotations[0],
           label: labelDraft.annotation_label,
           coordinate_type: labelDraft.annotation_type,
           required: labelDraft.annotation_required,
@@ -2657,54 +2952,71 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
             width: Number(labelDraft.annotation_width),
             height: Number(labelDraft.annotation_height),
           } : null,
-          points: labelDraft.annotation_spatial && labelDraft.annotation_type === "point" ? [[Number(labelDraft.annotation_x), Number(labelDraft.annotation_y)]] : [],
+          points: labelDraft.annotation_spatial && labelDraft.annotation_type === "point" ? [[Number(labelDraft.annotation_x), Number(labelDraft.annotation_y)] as [number, number]] : labelDraft.annotation_type === "polygon" ? existingAnnotations[0]?.points || [] : [],
           min_iou: Number(labelDraft.annotation_min_iou),
           max_point_distance: Number(labelDraft.annotation_max_point_distance),
           min_vertex_count: Number(labelDraft.annotation_min_vertex_count),
-          note: "",
+          note: existingAnnotations[0]?.note || "",
           source_image_id: labelDraft.source_image_id,
-        }] : [],
+        }] : []), ...existingAnnotations.slice(1)],
         reviewer: labelDraft.reviewer,
         reference_standard: labelDraft.reference_standard,
         protocol_notes: labelDraft.protocol_notes,
         skip_reason: labelDraft.skip_reason,
         notes: labelDraft.notes,
       });
-      setLabels(asList<ValidationLabel>(await api.validationLabels()));
+      await refreshLabels();
+    } catch (exc) {
+      showError(exc);
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
 
   async function deleteLabel(caseId: string) {
-    setBusy(true);
+    setBusy(true); setError("");
     try {
       await api.deleteValidationLabel(caseId);
-      setLabels(asList<ValidationLabel>(await api.validationLabels()));
-      if (labelDraft.case_id === caseId) setLabelDraft({ ...labelDraft, case_id: "", title: "" });
+      await refreshLabels();
+      if (mounted.current) setLabelDraft(current => current.case_id === caseId ? { ...current, case_id: "", title: "" } : current);
+      if (loadedLabel.current?.case_id === caseId) loadedLabel.current = null;
+    } catch (exc) {
+      showError(exc);
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
 
   async function writeFixture() {
-    setBusy(true);
+    setBusy(true); setError("");
     try {
       const res = await api.curatedValidationFixture();
-      setFixturePath(res.path);
+      if (mounted.current) setFixturePath(res.path);
+    } catch (exc) {
+      showError(exc);
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
 
   async function run(exportReport = false) {
-    setBusy(true);
+    setBusy(true); setError("");
     try {
-      setResult(await api.runValidation(exportReport));
-      setLabels(asList<ValidationLabel>(await api.validationLabels()));
+      const nextResult = await api.runValidation(exportReport);
+      if (mounted.current) setResult(nextResult);
+      await refreshLabels();
+    } catch (exc) {
+      showError(exc);
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
+  }
+
+  async function openForReview(caseId: string, imageId: string) {
+    setBusy(true); setError("");
+    try { await onOpenCase(caseId, imageId); }
+    catch (exc) { showError(exc); }
+    finally { if (mounted.current) setBusy(false); }
   }
 
   const labelList = asList<ValidationLabel>(labels);
@@ -2737,7 +3049,7 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
       {"matches" in item && <small>Findings: {asList<Record<string, unknown>>(item.matches).map(match => `${String(match.label)} ${String(match.expected_status)}->${String(match.predicted_status)}`).join("; ") || "none"}</small>}
       {"result_card_matches" in item && <small>Result cards: {asList<Record<string, unknown>>(item.result_card_matches).map(match => `${String(match.label)} ${String(match.expected_status)}->${String(match.predicted_status)} / ${String(match.review_status)}`).join("; ") || "none"}</small>}
       {"annotation_checks" in item && <small>Annotations: {asList<Record<string, unknown>>(item.annotation_checks).map(check => `${String(check.label)} ${String(check.matched)}${check.spatial_evaluated ? ` / IoU ${String(check.best_iou)} >= ${String(check.min_iou)}` : ""}`).join("; ") || "none"}</small>}
-      {String(item.case_id || "") && <button onClick={() => onOpenCase(String(item.case_id), String(item.source_image_id || ""))} disabled={busy || String(item.status).startsWith("skipped_")}>Open case for review</button>}
+      {String(item.case_id || "") && <button onClick={() => openForReview(String(item.case_id), String(item.source_image_id || ""))} disabled={busy || String(item.status).startsWith("skipped_")}>Open case for review</button>}
     </div>;
   }
 
@@ -2754,6 +3066,7 @@ function ValidationWorkbench({ activeCase, analysis, onOpenCase }: { activeCase:
       <div className="actions"><button onClick={() => run(false)} disabled={busy}><ClipboardCheck size={16} />Run</button><button onClick={() => run(true)} disabled={busy}><Download size={16} />Run + Export</button><button onClick={writeFixture} disabled={busy}><Download size={16} />Sample Fixture</button></div>
     </div>
     <div className="warn">Research-only agreement checks. Bukan sensitivity, specificity, atau performa klinis.</div>
+    {error && <div className="warn" role="alert">{error}</div>}
     {fixturePath && <div className="pathNote">Fixture written: {fixturePath}</div>}
     <div className="validationLayout">
       <section className="validationColumn">
@@ -2977,14 +3290,24 @@ export function CaseLibrary({ activeCase, analysis, onOpen, onDeleted, onCleared
   const [editingId, setEditingId] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const validationWorkspaceRef = useRef<HTMLDetailsElement | null>(null);
+  const searchVersionRef = useRef(0);
+  useEffect(() => () => { searchVersionRef.current += 1; }, []);
+
+  async function openCase(caseId: string) {
+    setError("");
+    try { await onOpen(caseId); } catch (exc) { setError(String(exc)); }
+  }
 
   async function refresh() {
+    const searchVersion = ++searchVersionRef.current;
     setError("");
     try {
       const [nextCases, nextLabels] = await Promise.all([api.cases(q), api.validationLabels()]);
+      if (searchVersion !== searchVersionRef.current) return;
       setCases(asList<CaseRecord>(nextCases));
       setValidationLabels(asList<ValidationLabel>(nextLabels));
     } catch (exc) {
+      if (searchVersion !== searchVersionRef.current) return;
       setCases([]);
       setError(String(exc));
     }
@@ -3060,7 +3383,7 @@ export function CaseLibrary({ activeCase, analysis, onOpen, onDeleted, onCleared
     const studyCount = new Set(images.map(image => image.study_id).filter(Boolean)).size;
     const title = String(c.title || caseId || "Untitled case");
     const identifier = String(c.metadata?.LocalRecordID || c.metadata?.PatientID || c.metadata?.AccessionNumber || "");
-    return <div className={`caseRow ${activeCase?.case_id === caseId ? "activeCaseRow" : ""}`} key={caseId || index}><FolderOpen /><div>{editingId === caseId ? <input aria-label={language === "en" ? "Edit case title" : "Edit judul kasus"} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void saveTitle(c); if (event.key === "Escape") setEditingId(""); }} /> : <b>{title}</b>}<span>{identifier || caseId} · {updated}</span><small>{images.length || 0} image(s) · {studyCount || (images.length ? 1 : 0)} study · {seriesCount || (images.length ? 1 : 0)} series</small><small className={`caseValidationState ${labelledCaseIds.has(caseId) ? "labelled" : "unlabelled"}`}>{labelledCaseIds.has(caseId) ? (language === "en" ? "Reference label saved" : "Label referensi tersimpan") : (language === "en" ? "Not labelled for validation" : "Belum diberi label validasi")}</small></div><div className="caseRowActions">{editingId === caseId ? <><button onClick={() => saveTitle(c)} disabled={!titleDraft.trim()}><Save size={15} />{language === "en" ? "Save" : "Simpan"}</button><button onClick={() => setEditingId("")}>{language === "en" ? "Cancel" : "Batal"}</button></> : <button onClick={() => { setEditingId(caseId); setTitleDraft(title); }}><FileText size={15} />{language === "en" ? "Rename" : "Ubah nama"}</button>}<button className="primaryAction" onClick={() => onOpen(caseId)} disabled={!caseId}>{copy.open}</button><button className="dangerAction iconButton" onClick={() => removeCase(caseId, title)} disabled={!caseId} aria-label={`${language === "en" ? "Delete" : "Hapus"} ${title}`} title={language === "en" ? "Delete case" : "Hapus kasus"}><Trash2 size={15} /></button></div></div>;
+    return <div className={`caseRow ${activeCase?.case_id === caseId ? "activeCaseRow" : ""}`} key={caseId || index}><FolderOpen /><div>{editingId === caseId ? <input aria-label={language === "en" ? "Edit case title" : "Edit judul kasus"} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void saveTitle(c); if (event.key === "Escape") setEditingId(""); }} /> : <b>{title}</b>}<span>{identifier || caseId} · {updated}</span><small>{images.length || 0} image(s) · {studyCount || (images.length ? 1 : 0)} study · {seriesCount || (images.length ? 1 : 0)} series</small><small className={`caseValidationState ${labelledCaseIds.has(caseId) ? "labelled" : "unlabelled"}`}>{labelledCaseIds.has(caseId) ? (language === "en" ? "Reference label saved" : "Label referensi tersimpan") : (language === "en" ? "Not labelled for validation" : "Belum diberi label validasi")}</small></div><div className="caseRowActions">{editingId === caseId ? <><button onClick={() => saveTitle(c)} disabled={!titleDraft.trim()}><Save size={15} />{language === "en" ? "Save" : "Simpan"}</button><button onClick={() => setEditingId("")}>{language === "en" ? "Cancel" : "Batal"}</button></> : <button onClick={() => { setEditingId(caseId); setTitleDraft(title); }}><FileText size={15} />{language === "en" ? "Rename" : "Ubah nama"}</button>}<button className="primaryAction" onClick={() => void openCase(caseId)} disabled={!caseId}>{copy.open}</button><button className="dangerAction iconButton" onClick={() => removeCase(caseId, title)} disabled={!caseId} aria-label={`${language === "en" ? "Delete" : "Hapus"} ${title}`} title={language === "en" ? "Delete case" : "Hapus kasus"}><Trash2 size={15} /></button></div></div>;
   }) : <p>{copy.noCases}</p>}
     {visibleLimit < cases.length && <button className="loadMore" onClick={() => setVisibleLimit(limit => limit + 15)}>{language === "en" ? `Show 15 more (${cases.length - visibleLimit} remaining)` : `Tampilkan 15 lagi (${cases.length - visibleLimit} tersisa)`}</button>}
     </div>

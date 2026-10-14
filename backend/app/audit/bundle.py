@@ -12,9 +12,9 @@ from app.dicom.safety import dicom_safety_report
 from app.model_registry.cards import cards_for_trace
 from app.reports.generator import build_grounded_review_statements
 from app.results.differential import build_differential_assistance
-from app.studies.images import normalize_case_images
 from app.storage.db import safe_path_component
-
+from app.storage.files import atomic_write_text
+from app.studies.images import annotation_matches_image, normalize_case_images
 
 AUDIT_SCHEMA_VERSION = "0.4.0"
 
@@ -93,7 +93,7 @@ def build_audit_bundle(case: dict[str, Any]) -> dict[str, Any]:
     grounded_review_statements = build_grounded_review_statements(case, "id")
     differential_assistance = build_differential_assistance(result_cards, report)
     review_counts = {
-        status: sum(1 for card in result_cards if card.get("review_status") == status)
+        status: sum(1 for card in result_cards if str(card.get("review_status") or "unreviewed") == status)
         for status in sorted({str(card.get("review_status") or "unreviewed") for card in result_cards})
     }
     annotation_review_summary = build_annotation_review_bundle(case)["review_summary"]
@@ -143,16 +143,9 @@ def build_audit_bundle(case: dict[str, Any]) -> dict[str, Any]:
                 str(image.get("image_id")): sum(
                 1
                 for annotation in annotations
-                    if (
-                        str(annotation.get("source_image_id") or "")
-                        in {str(image.get("image_id") or ""), str(image.get("sop_instance_uid") or ""), str(image.get("filename") or "")}
-                        or (
-                            int(image.get("index") or 0) == 0
-                            and str(annotation.get("source_image_id") or "") in {"", "primary"}
-                        )
-                    )
+                    if annotation_matches_image(annotation, image, index == 0, case.get("images", []))
                 )
-                for image in case.get("images", [])
+                for index, image in enumerate(case.get("images", []))
             },
             "annotation_review_summary": annotation_review_summary,
             "report_watermark": report.get("watermark"),
@@ -178,6 +171,8 @@ def export_audit_bundle(case: dict[str, Any]) -> dict[str, Any]:
     settings.exports_dir.mkdir(parents=True, exist_ok=True)
     bundle = build_audit_bundle(case)
     case_id = str(case.get("case_id") or "unknown")
-    path = settings.exports_dir / f"{safe_path_component(case_id, 'case')}_audit_bundle.json"
-    path.write_text(json.dumps(bundle, indent=2, ensure_ascii=False), encoding="utf-8")
+    out_dir = settings.exports_dir / safe_path_component(case_id, "case")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "audit_bundle.json"
+    atomic_write_text(path, json.dumps(bundle, indent=2, ensure_ascii=False, allow_nan=False))
     return {"path": str(path), "bundle": bundle}

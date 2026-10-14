@@ -1,4 +1,4 @@
-import type { Annotation, ResultCard } from "./types";
+import type { Annotation, ResultCard, StudyImage } from "./types";
 
 const PROMOTED_REVIEW_STATUSES = new Set(["accepted", "uncertain", "needs_follow_up"]);
 
@@ -22,6 +22,18 @@ export function annotationsForImage(annotations: Annotation[], imageId: string, 
     const sourceId = String(annotation.source_image_id || "");
     return sourceId === imageId || (isFirstImage && ["", "primary"].includes(sourceId));
   });
+}
+
+export function annotationMatchesStudyImage(annotation: Annotation, image: StudyImage | null, firstImage: boolean, images: StudyImage[] = []): boolean {
+  if (!image) return false;
+  const sourceId = String(annotation.source_image_id || "");
+  if (["", "primary"].includes(sourceId)) return firstImage;
+  if (sourceId === image.image_id) return true;
+  if (images.some(item => item.image_id === sourceId)) return false;
+  const sopUid = String(image.sop_instance_uid || "");
+  if (sopUid && sourceId === sopUid && (images.length ? images : [image]).filter(item => item.sop_instance_uid === sopUid).length === 1) return true;
+  const filename = String(image.filename || "");
+  return Boolean(filename && sourceId === filename && images.filter(item => item.filename === filename).length === 1);
 }
 
 function safeList<T>(value: unknown): T[] {

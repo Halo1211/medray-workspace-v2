@@ -7,7 +7,6 @@ from typing import Any
 from app.config import get_settings
 from app.model_registry.validation_evidence import validation_evidence_assessment
 
-
 DEMO_MODEL_CARDS: dict[str, dict[str, Any]] = {
     "demo-safe-radiology-assistant": {
         "id": "demo-safe-radiology-assistant",

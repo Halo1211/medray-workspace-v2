@@ -113,7 +113,7 @@ Commercial claims such as turnaround-time reduction or high AUC are inspiration 
 - [x] Add a full multi-image study navigator and per-view image switching.
 - [x] Preserve DICOM source frame number and Pixel Spacing-aware measurement output.
 
-Implementation status: grounded review, stable evidence links, source image/frame identity, separate original/reviewed exports, multi-image navigation, advanced manual authoring, and calibrated length/ellipse measurement are implemented. DICOM SEG/SR/GSPS serialization remains future interoperability work; JSON/PNG review packages are not represented as those DICOM SOP Classes.
+Implementation status: grounded review, stable evidence links, source image/frame identity, separate original/reviewed exports, multi-image navigation, advanced manual authoring, calibrated length/ellipse measurement, and three-point angles with draggable measurement endpoints are implemented. Annotation input accounts for rotation, flips, and zoom. DICOM SEG/SR/GSPS serialization remains future interoperability work; JSON/PNG review packages are not represented as those DICOM SOP Classes.
 
 ### Phase 2: Anatomy Routing
 

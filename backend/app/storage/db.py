@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import json
 import hashlib
-import sqlite3
+import json
 import shutil
+import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-
 
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -22,12 +23,17 @@ def _is_windows_reserved_name(value: str) -> bool:
     return value.rstrip(" .").split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
 
 
-def connect() -> sqlite3.Connection:
+@contextmanager
+def connect() -> Iterator[sqlite3.Connection]:
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(settings.db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
@@ -99,26 +105,71 @@ def _decode_mapping(raw: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def save_case(payload: dict[str, Any]) -> None:
+class CaseConflictError(ValueError):
+    """An editor tried to overwrite a newer saved case."""
+
+
+class CaseNotFoundError(LookupError):
+    """An update targets a case that no longer exists."""
+
+
+def _case_revision(payload: dict[str, Any]) -> int:
+    value = payload.get("revision")
+    return value if type(value) is int and value >= 0 else 0
+
+
+def _read_case(conn: sqlite3.Connection, case_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT payload FROM cases WHERE case_id = ?", (case_id,)).fetchone()
+    payload = _decode_mapping(row["payload"]) if row else None
+    if payload is not None:
+        payload["revision"] = _case_revision(payload)
+    return payload
+
+
+def _write_case(conn: sqlite3.Connection, payload: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
     timestamp = datetime.now(timezone.utc).isoformat()
-    created_at = payload.get("created_at") or timestamp
-    updated_at = payload.get("updated_at") or created_at
-    payload = {**payload, "created_at": created_at, "updated_at": updated_at}
+    created_at = (previous or {}).get("created_at") or payload.get("created_at") or timestamp
+    updated_at = timestamp
+    payload = {**payload, "created_at": created_at, "updated_at": updated_at, "revision": _case_revision(previous or {}) + 1}
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO cases (case_id, title, image_path, payload, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (payload["case_id"], payload.get("title", "Untitled X-ray case"), payload.get("image_path"), json.dumps(payload), created_at, updated_at),
+    )
+    return payload
+
+
+def save_case(payload: dict[str, Any], expected_revision: int | None = None) -> dict[str, Any]:
     with connect() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO cases (case_id, title, image_path, payload, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                payload["case_id"],
-                payload.get("title", "Untitled X-ray case"),
-                payload.get("image_path"),
-                json.dumps(payload),
-                created_at,
-                updated_at,
-            ),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        previous = _read_case(conn, payload["case_id"])
+        if expected_revision is not None:
+            if previous is None:
+                raise CaseNotFoundError("Case no longer exists.")
+            if _case_revision(previous) != expected_revision:
+                raise CaseConflictError("This case changed in another operation. Your edits were not saved. Load the latest saved case before editing again.")
+        return _write_case(conn, payload, previous)
+
+
+def update_case(case_id: str, transform: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    """Read and transform the latest case in one short write transaction.
+
+    Callers must perform inference, network requests and file ingest before
+    entering this callback so they do not hold the database lock during IO.
+    """
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        previous = _read_case(conn, case_id)
+        if previous is None:
+            raise CaseNotFoundError("Case no longer exists.")
+        created_at = previous.get("created_at")
+        revision = _case_revision(previous)
+        payload = transform(previous)
+        if payload.get("case_id") != case_id:
+            raise ValueError("A case update cannot change its identity.")
+        return _write_case(conn, payload, {"created_at": created_at, "revision": revision})
 
 
 def list_cases(query: str = "") -> list[dict[str, Any]]:
@@ -128,13 +179,12 @@ def list_cases(query: str = "") -> list[dict[str, Any]]:
             "SELECT payload FROM cases WHERE lower(title) LIKE ? OR lower(case_id) LIKE ? ORDER BY updated_at DESC",
             (like, like),
         ).fetchall()
-    return [payload for row in rows if (payload := _decode_mapping(row["payload"])) is not None]
+    return [{**payload, "revision": _case_revision(payload)} for row in rows if (payload := _decode_mapping(row["payload"])) is not None]
 
 
 def get_case(case_id: str) -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute("SELECT payload FROM cases WHERE case_id = ?", (case_id,)).fetchone()
-    return _decode_mapping(row["payload"]) if row else None
+        return _read_case(conn, case_id)
 
 
 def _remove_case_directory(root: Path, case_id: str) -> bool:
@@ -167,10 +217,23 @@ def _remove_case_directories(root: Path) -> int:
     return removed
 
 
+def _remove_legacy_audit_exports(root: Path, case_id: str | None = None) -> int:
+    """Older audit exports were written beside case export directories."""
+    root = root.resolve()
+    candidates = [root / f"{safe_path_component(case_id, 'case')}_audit_bundle.json"] if case_id is not None else list(root.glob("*_audit_bundle.json"))
+    removed = 0
+    for path in candidates:
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    return removed
+
+
 def delete_case(case_id: str) -> dict[str, Any]:
     settings = get_settings()
     removed_case_dir = _remove_case_directory(settings.cases_dir, case_id)
     removed_export_dir = _remove_case_directory(settings.exports_dir, case_id)
+    removed_legacy_exports = _remove_legacy_audit_exports(settings.exports_dir, case_id)
     with connect() as conn:
         cursor = conn.execute("DELETE FROM cases WHERE case_id = ?", (case_id,))
         deleted = cursor.rowcount > 0
@@ -179,6 +242,7 @@ def delete_case(case_id: str) -> dict[str, Any]:
         "case_id": case_id,
         "removed_case_dir": removed_case_dir,
         "removed_export_dir": removed_export_dir,
+        "removed_legacy_audit_exports": removed_legacy_exports,
     }
 
 
@@ -189,6 +253,7 @@ def clear_case_database() -> dict[str, Any]:
         case_ids = [str(row["case_id"]) for row in rows]
     removed_case_dirs = _remove_case_directories(settings.cases_dir)
     removed_export_dirs = _remove_case_directories(settings.exports_dir)
+    removed_legacy_exports = _remove_legacy_audit_exports(settings.exports_dir)
     with connect() as conn:
         conn.execute("DELETE FROM cases")
     return {
@@ -196,6 +261,7 @@ def clear_case_database() -> dict[str, Any]:
         "deleted_case_count": len(case_ids),
         "removed_case_dirs": removed_case_dirs,
         "removed_export_dirs": removed_export_dirs,
+        "removed_legacy_audit_exports": removed_legacy_exports,
     }
 
 

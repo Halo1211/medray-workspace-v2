@@ -3,6 +3,28 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+REVIEW_METADATA_FIELDS = {"LocalRecordID", "PatientID", "AccessionNumber", "StudyDescription", "ClinicalIndication", "CaseNotes"}
+
+
+def annotation_matches_image(annotation: dict[str, Any], image: dict[str, Any], first_image: bool = False, images: list[dict[str, Any]] | None = None) -> bool:
+    source_id = str(annotation.get("source_image_id") or "")
+    if source_id in {"", "primary"}:
+        return first_image
+    if source_id == str(image.get("image_id") or ""):
+        return True
+    # A canonical image ID takes priority over legacy aliases. Reimporting
+    # the same DICOM must not attach the first image's annotations to a copy.
+    if any(source_id == str(item.get("image_id") or "") for item in (images or [])):
+        return False
+    accepted: set[str] = set()
+    sop_uid = str(image.get("sop_instance_uid") or "")
+    if sop_uid and sum(str(item.get("sop_instance_uid") or "") == sop_uid for item in (images or [image])) == 1:
+        accepted.add(sop_uid)
+    filename = str(image.get("filename") or "")
+    if filename and sum(str(item.get("filename") or "") == filename for item in (images or [])) == 1:
+        accepted.add(filename)
+    return source_id in accepted
+
 
 def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
@@ -76,6 +98,10 @@ def normalize_case_images(case: dict[str, Any]) -> dict[str, Any]:
         image_id = str(image.get("image_id") or _image_id(metadata, case_id, index))
         if image_id in seen:
             image_id = f"{case_id}:{index}"
+            suffix = 1
+            while image_id in seen:
+                image_id = f"{case_id}:{index}:{suffix}"
+                suffix += 1
         seen.add(image_id)
         clean_images.append({**image, "image_id": image_id, "index": index, "metadata": metadata})
 
@@ -93,13 +119,10 @@ def normalize_case_images(case: dict[str, Any]) -> dict[str, Any]:
         for image_id, analysis in raw_analyses.items()
         if str(image_id) in seen and isinstance(analysis, dict)
     }
-    # The top-level analysis is the legacy representation of the active
-    # image. Restore it whenever the active image has a valid identity but its
-    # per-image mapping is missing (for example after an old payload stored a
-    # stale image id in `active_image_id`). Without this recovery, a valid
-    # legacy analysis can be silently hidden by an unrelated orphan mapping.
+    # Migrate a legacy top-level analysis only when no usable per-image
+    # mapping exists. Otherwise it may belong to the previously active image.
     legacy_analysis = normalized.get("analysis")
-    if active_id and active_id not in analyses and isinstance(legacy_analysis, dict):
+    if active_id and not analyses and isinstance(legacy_analysis, dict):
         analyses[active_id] = legacy_analysis
     normalized["analyses_by_image"] = analyses
     active = next((image for image in clean_images if image["image_id"] == active_id), None)
@@ -107,6 +130,12 @@ def normalize_case_images(case: dict[str, Any]) -> dict[str, Any]:
         normalized["image_path"] = active.get("image_path")
         normalized["image_preview"] = active.get("preview_path")
         normalized["metadata"] = active.get("metadata") or {}
+        reviewer_metadata = normalized.get("reviewer_metadata")
+        if isinstance(reviewer_metadata, dict):
+            normalized["metadata"] = {
+                **{key: value for key, value in normalized["metadata"].items() if key not in REVIEW_METADATA_FIELDS},
+                **{key: value for key, value in reviewer_metadata.items() if key in REVIEW_METADATA_FIELDS},
+            }
         normalized["file_hashes"] = active.get("file_hashes") if isinstance(active.get("file_hashes"), dict) else {}
         if active_id in analyses:
             normalized["analysis"] = analyses[active_id]

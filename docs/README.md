@@ -6,8 +6,6 @@ Start with the project [README](../README.md), then use this index to find the r
 
 - [Architecture](ARCHITECTURE.md)
 - [Product roadmap](ROADMAP.md)
-- [Result-focused roadmap](RESULT_FOCUSED_ROADMAP.md)
-- [GUI redesign and workflow](GUI_REDESIGN_AND_FLOW.md)
 - [GUI usability guide](GUI_USABILITY_GUIDE.md)
 - [X-ray annotation direction](XRAY_ANNOTATION_DIRECTION.md)
 
@@ -22,6 +20,7 @@ Start with the project [README](../README.md), then use this index to find the r
 
 ## Operations
 
+- [Verification and operating limits](VERIFICATION.md)
 - [Safety](SAFETY.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [GitHub release checklist](GITHUB_RELEASE_CHECKLIST.md)

@@ -4,13 +4,13 @@ import json
 import textwrap
 from typing import Any
 
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-
 from app.config import get_settings
 from app.results.differential import report_differential_assistance
 from app.storage.db import safe_path_component
-
+from app.storage.files import atomic_output_path, atomic_write_text
+from app.studies.images import annotation_matches_image, normalize_case_images
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 DISCLAIMER_ID = "AI-assisted draft, not for standalone clinical diagnosis. Untuk riset/edukasi/prototyping; perlu verifikasi radiolog/dokter."
 PROMOTED_REVIEW_STATUSES = {"accepted", "uncertain", "needs_follow_up"}
@@ -43,7 +43,11 @@ def _score_text(card: dict[str, Any]) -> str:
 def _all_annotations(case: dict[str, Any], analysis: dict[str, Any]) -> list[dict[str, Any]]:
     annotations: list[dict[str, Any]] = []
     seen: set[str] = set()
+    images = _list_of_dicts(case.get("images"))
+    active = next((image for image in images if image.get("image_id") == case.get("active_image_id")), None)
     for annotation in [*_list_of_dicts(case.get("annotations")), *_list_of_dicts(analysis.get("annotations"))]:
+        if active and not annotation_matches_image(annotation, active, active == images[0], images):
+            continue
         annotation_id = str(annotation.get("id") or "")
         if annotation_id and annotation_id in seen:
             continue
@@ -170,9 +174,14 @@ def build_grounded_review_statements(case: dict[str, Any], language: str = "id")
             and str(annotations_by_id[ref].get("review_status") or "unreviewed") in PROMOTED_REVIEW_STATUSES
         ]
         reviewer_note = str(card.get("reviewer_note") or "").strip()
-        source_image_ids = sorted({str(annotations_by_id[ref].get("source_image_id") or "") for ref in reviewed_annotation_refs if annotations_by_id[ref].get("source_image_id")}) or [str(item) for item in card.get("source_image_ids", []) if item] if isinstance(card.get("source_image_ids"), list) else []
-        source_series_ids = sorted({str(annotations_by_id[ref].get("source_series_id") or "") for ref in reviewed_annotation_refs if annotations_by_id[ref].get("source_series_id")}) or [str(item) for item in card.get("source_series_ids", []) if item] if isinstance(card.get("source_series_ids"), list) else []
-        source_views = sorted({str(annotations_by_id[ref].get("source_view") or "") for ref in reviewed_annotation_refs if annotations_by_id[ref].get("source_view")}) or [str(item) for item in card.get("source_views", []) if item] if isinstance(card.get("source_views"), list) else []
+        def provenance(annotation_field: str, card_field: str, refs=reviewed_annotation_refs, source_card=card) -> list[str]:
+            linked = sorted({str(annotations_by_id[ref][annotation_field]) for ref in refs if annotations_by_id[ref].get(annotation_field)})
+            fallback = source_card.get(card_field)
+            return linked or ([str(item) for item in fallback if item] if isinstance(fallback, list) else [])
+
+        source_image_ids = provenance("source_image_id", "source_image_ids")
+        source_series_ids = provenance("source_series_id", "source_series_ids")
+        source_views = provenance("source_view", "source_views")
         note_text = f" Reviewer note: {reviewer_note}" if language == "en" and reviewer_note else f" Catatan reviewer: {reviewer_note}" if reviewer_note else ""
         if language == "en":
             text = (
@@ -332,31 +341,44 @@ def report_markdown(case: dict[str, Any], language: str = "id") -> str:
 
 
 def export_report(case: dict[str, Any], fmt: str = "markdown", language: str = "id") -> dict[str, str]:
+    if fmt not in {"markdown", "json", "pdf"} or language not in {"en", "id"}:
+        raise ValueError("Choose Markdown, JSON or PDF and English or Indonesian for report export.")
+    case = normalize_case_images(case)
     settings = get_settings()
     case_id = case.get("case_id", "case")
     out_dir = settings.exports_dir / safe_path_component(case_id, "case")
     out_dir.mkdir(parents=True, exist_ok=True)
+    stem = "report"
+    images = _list_of_dicts(case.get("images"))
+    if len(images) > 1:
+        index = next(index for index, image in enumerate(images) if image["image_id"] == case["active_image_id"])
+        stem = f"report-image-{index + 1}"
     if fmt == "json":
-        path = out_dir / "report.json"
-        path.write_text(json.dumps(report_json_payload(case, language), indent=2, ensure_ascii=False), encoding="utf-8")
+        path = out_dir / f"{stem}.json"
+        atomic_write_text(path, json.dumps(report_json_payload(case, language), indent=2, ensure_ascii=False, allow_nan=False))
         return {"path": str(path), "content_type": "application/json"}
     if fmt == "pdf":
-        path = out_dir / "report.pdf"
+        path = out_dir / f"{stem}.pdf"
         text = report_markdown(case, language).replace("# ", "").replace("## ", "")
-        c = canvas.Canvas(str(path), pagesize=A4)
-        y = 800
-        c.setFont("Helvetica", 9)
-        for line in _wrapped_pdf_lines(text):
-            if y < 50:
-                c.showPage()
-                c.setFont("Helvetica", 9)
-                y = 800
-            c.drawString(40, y, line)
-            y -= 14
-        c.setFont("Helvetica-Oblique", 8)
-        c.drawString(40, 28, "AI-assisted draft, not for standalone clinical diagnosis.")
-        c.save()
+        with atomic_output_path(path) as temporary:
+            _write_pdf(temporary, text)
         return {"path": str(path), "content_type": "application/pdf"}
-    path = out_dir / "report.md"
-    path.write_text(report_markdown(case, language), encoding="utf-8")
+    path = out_dir / f"{stem}.md"
+    atomic_write_text(path, report_markdown(case, language))
     return {"path": str(path), "content_type": "text/markdown"}
+
+
+def _write_pdf(path, text: str) -> None:
+    c = canvas.Canvas(str(path), pagesize=A4)
+    y = 800
+    c.setFont("Helvetica", 9)
+    for line in _wrapped_pdf_lines(text):
+        if y < 50:
+            c.showPage()
+            c.setFont("Helvetica", 9)
+            y = 800
+        c.drawString(40, y, line)
+        y -= 14
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawString(40, 28, "AI-assisted draft, not for standalone clinical diagnosis.")
+    c.save()

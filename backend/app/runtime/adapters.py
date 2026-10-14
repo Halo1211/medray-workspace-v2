@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import ipaddress
 import json
-import inspect
-import time
 import shutil
+import time
 import urllib.error
-import urllib.request
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
 from app.models.schemas import RuntimeConfig
 from app.runtime.secrets import provider_key, safe_error
-
+from app.studies.images import annotation_matches_image, normalize_case_images
 
 SAFE_SYSTEM_PROMPT = """You are MedRay v2, an AI radiology research assistant.
 Do not claim a definitive diagnosis. Separate objective findings, reasoning, impression, uncertainty, and recommendations.
@@ -59,7 +59,9 @@ def _json_request(url: str, payload: dict[str, Any] | None = None, timeout: int 
         try:
             with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as res:
                 return json.loads(res.read().decode("utf-8"))
-        except (TimeoutError, urllib.error.URLError):
+        except (TimeoutError, urllib.error.URLError) as exc:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code not in {408, 429, 500, 502, 503, 504}:
+                raise
             if attempt >= max_retries:
                 raise
             time.sleep(min(2 ** attempt, 4))
@@ -128,7 +130,9 @@ def openai_compatible_chat(messages: list[dict[str, Any]], model: str, base_url:
             with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as res:
                 data = json.loads(res.read().decode("utf-8"))
             break
-        except (TimeoutError, urllib.error.URLError):
+        except (TimeoutError, urllib.error.URLError) as exc:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code not in {408, 429, 500, 502, 503, 504}:
+                raise
             if attempt >= max_retries:
                 raise
             time.sleep(min(2 ** attempt, 4))
@@ -143,6 +147,7 @@ def openai_compatible_chat(messages: list[dict[str, Any]], model: str, base_url:
 def openai_compatible_vision(image_path: str, prompt: str, model: str, base_url: str, api_key: str, **options: Any) -> str:
     """Standard chat-completions image input; the selected server must support it."""
     import io
+
     from PIL import Image
     with Image.open(image_path) as image:
         buffer = io.BytesIO()
@@ -202,14 +207,22 @@ def _string_list(value: Any) -> list[str]:
 
 
 def chat_response(message: str, history: list[dict[str, str]], config: RuntimeConfig, context: dict[str, Any], language: str = "id") -> dict[str, Any]:
+    context = normalize_case_images(context)
     is_en = language != "id"
     analysis = context.get("analysis") if isinstance(context.get("analysis"), dict) else {}
     annotations = _list_of_dicts(context.get("annotations")) or _list_of_dicts(analysis.get("annotations"))
+    images = _list_of_dicts(context.get("images"))
+    active = next((image for image in images if image["image_id"] == context.get("active_image_id")), None)
+    if active:
+        annotations = [annotation for annotation in annotations if annotation_matches_image(annotation, active, active == images[0], images)]
+    analysis = {**analysis, "annotations": annotations}
+    context = {**context, "annotations": annotations, "analysis": analysis}
     fallback_annotations = [
         ann for ann in annotations if "fallback" in str(ann.get("source", "")).lower()
     ]
     focused_context = {
         "case_id": context.get("case_id"),
+        "active_image_id": context.get("active_image_id"),
         "title": context.get("title"),
         "analysis_findings": _list_of_dicts(analysis.get("findings")),
         "annotations": annotations,
@@ -243,7 +256,7 @@ def chat_response(message: str, history: list[dict[str, str]], config: RuntimeCo
             + f"{'Question' if is_en else 'Pertanyaan'}: {message}"
         ),
     }
-    messages = [user] if analysis else history[-6:] + [user]
+    messages = history[-6:] + [user]
     connection = runtime_task_connection(config, "chat")
     chat_model = connection["model"]
     if chat_model == "disabled" or chat_model.startswith("demo-"):

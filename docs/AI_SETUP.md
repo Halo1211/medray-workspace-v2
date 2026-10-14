@@ -96,4 +96,4 @@ The Reading Room exposes annotation origin, AI confidence, review state, filters
 
 “Downloaded” means that an artifact exists. “Ready” means that the exact technical test passed. Neither status establishes clinical performance. MedRay is for research, education, and prototyping and is not an authorized diagnostic device. Every output requires qualified physician review.
 
-See [AI Setup verification](AI_SETUP_VERIFICATION.md), [Safety](SAFETY.md), and [Model Finder](MODEL_FINDER.md) for implementation limits.
+See [verification and operating limits](VERIFICATION.md), [Safety](SAFETY.md), and [Model Finder](MODEL_FINDER.md) for implementation limits.

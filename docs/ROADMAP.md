@@ -71,4 +71,4 @@ A public research release is ready only when:
 - setup and recovery paths have been checked on the target operating system;
 - the README, safety guidance, screenshots, and known limitations match the shipped behavior.
 
-The detailed historical design sequence is retained in [Result-Focused Roadmap](RESULT_FOCUSED_ROADMAP.md). It is a design record, not the current verification baseline.
+See [verification and operating limits](VERIFICATION.md) for the current test scope and remaining platform/model validation work.

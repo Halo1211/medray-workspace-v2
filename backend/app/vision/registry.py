@@ -20,7 +20,7 @@ def _string_list(value: Any) -> list[str]:
 
 
 def list_vision_adapters() -> list[dict[str, Any]]:
-    txrv_available, txrv_missing = _available_modules(["torch", "torchxrayvision"])
+    _, txrv_missing = _available_modules(["torch", "torchxrayvision"])
     from app.ai_setup.service import xray_readiness
     readiness = xray_readiness()
     adapters = [

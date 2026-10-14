@@ -1,27 +1,60 @@
 # Changelog
 
-All notable changes to MedRay v2 will be documented here.
+MedRay v2 is an alpha research prototype. Artifact schema versions are independent
+of the application release version.
 
-The project is currently an alpha research prototype and does not yet follow a formal release schedule.
-
-## Unreleased
+## 0.2.0-alpha.1 — October 14, 2026
 
 ### Added
 
-- Advanced Reading Room annotations: ellipse ROI, calibrated length, DICOM frame identity, bounded undo/redo, lock-aware editing, and reviewed export support.
-- DICOM multi-frame rendering with VOI/window-level presets, manual center/width, inversion, rotation/flip controls, and Pixel Spacing exposure.
-- Adaptive segmented model downloads with range validation, pause/resume segment recovery, connection tuning, and optional SHA-256 verification.
-- Advanced AI preferences for generation temperature, output budget, request timeout, retries, annotation suggestion threshold, and download concurrency.
-- Unified Case Library and Validation workspace with inline case rename.
+- Three-point angle measurements and editable length/angle endpoints, with DICOM
+  Pixel Spacing support and geometry locks.
+- Server-managed case revisions, conditional saves, a shared editor save queue,
+  and explicit conflict recovery.
+- Independent tested vision, chat, and report connections; guided specialist
+  classifier setup; model-card and validation-evidence activation gates.
+- Adaptive segmented downloads with pause/resume recovery and SHA-256 checking.
+- Release checks for matching versions, React dependency compatibility, Markdown
+  formatting, and local documentation links.
 
-- Local-first X-ray review workspace with React/Vite frontend and FastAPI backend.
-- PNG, JPEG, and DICOM ingestion with multi-image case support.
-- Anatomy routing for chest, MSK/trauma, abdomen/KUB, spine, skull/facial/sinus, and general X-ray profiles.
-- Structured findings, result cards, annotations, report drafting, audit exports, and DICOM safety utilities.
-- Model Finder, local model-card gates, optional Ollama/TorchXRayVision/Ultralytics adapters, and Validation Workbench.
-- GitHub CI, Dependabot configuration, issue templates, and a ready-to-publish wiki source.
+### Fixed
 
-### Limitations
+- Update the transitive `source-map-js` dependency to the patched 1.2.2 release
+  for [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).
+- Preserve original high-bit-depth PNG sources and render their intensity range
+  consistently for preview and analysis.
+- Correct DICOM palette colors, calibration values, paired window presets, and
+  color-image display controls; make the frame-1 analysis/export boundary clear.
+- Keep analysis, annotations, review decisions, and evidence links attached to
+  the correct image through editing, undo/redo, and concurrent operations.
+- Prevent stale case, chat, setup, and validation responses from replacing newer
+  state or changing the selected page.
+- Preserve chat history and current-image context; wait for pending saves and
+  propagate server revisions before subsequent editor saves.
+- Retain request deadlines and cancellation while reading response bodies and
+  after backend discovery.
+- Preserve completed export files, model cards, and validation references after
+  interrupted writes; reject unsupported options and nonfinite input/output.
+- Validate detector scores, range responses, model paths, and explicit download
+  checksums; recover interrupted and missing model artifacts.
+- Keep the application usable when browser preference storage is unavailable.
 
-- No clinical validation, production authentication, or DICOMweb integration has been provided yet.
-- The Built-in Demo is deterministic scaffolding and is not a trained clinical model.
+### Documentation
+
+- Publish English documentation with a single verification summary and updated
+  user and classifier guides.
+- Remove temporary audit reports, redundant design history, and debug screenshots
+  from the public repository.
+
+## 0.1.0-alpha
+
+- Initial local-first X-ray review workspace with raster/DICOM import, anatomy
+  routing, structured findings, annotations, draft reports, and audit exports.
+- Local case storage, model discovery, runtime adapters, validation tools,
+  platform launchers, and GitHub Actions CI.
+
+## Known limitations
+
+The demo is deterministic scaffolding. Clinical validation, production
+authentication, DICOMweb, and universal provider/GPU compatibility are not
+established. See [verification and operating limits](docs/VERIFICATION.md).

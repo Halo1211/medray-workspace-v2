@@ -16,10 +16,15 @@ Follow the manual setup in [README.md](README.md), then run:
 
 ```bash
 python -m pytest backend/tests
+python scripts/check_release.py
 cd frontend
 npm test -- --run
 npm run build
 ```
+
+Keep application versions aligned in the backend, frontend package, and lockfile.
+Pin React and React DOM to the same version. Public Markdown documentation is
+written in English; the application continues to support English and Indonesian.
 
 ## Pull requests
 

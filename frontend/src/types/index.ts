@@ -210,6 +210,7 @@ export type AnatomyRoute = {
 
 export type CaseRecord = {
   case_id: string;
+  revision?: number;
   title: string;
   image_path?: string;
   image_preview?: string;

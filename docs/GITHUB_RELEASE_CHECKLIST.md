@@ -15,6 +15,9 @@ Run this checklist before the first push and before each public release.
 - [ ] `python -m pytest backend/tests` passes.
 - [ ] `npm test -- --run` passes in `frontend`.
 - [ ] `npm run build` passes in `frontend`.
+- [ ] `python scripts/check_release.py` passes.
+- [ ] Markdown formatting and all GitHub Actions jobs pass for the release commit.
+- [ ] Backend, frontend, lockfile, and changelog versions match.
 - [ ] A fresh browser session opens in English and all primary pages load.
 - [ ] Setup instructions were tested on the target operating system.
 

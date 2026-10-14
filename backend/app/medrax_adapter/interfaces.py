@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from app.models.schemas import AnalysisResult
 
@@ -51,7 +51,7 @@ class AgentOrchestrator:
 
 
 class OutputNormalizer:
-    required_keys = {
+    required_keys: ClassVar[frozenset[str]] = frozenset({
         "case_id",
         "input",
         "image_quality",
@@ -64,7 +64,7 @@ class OutputNormalizer:
         "report",
         "model_trace",
         "warnings",
-    }
+    })
 
     def normalize(self, result: AnalysisResult | dict[str, Any]) -> dict[str, Any]:
         payload = result.model_dump(mode="json") if isinstance(result, AnalysisResult) else dict(result)

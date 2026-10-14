@@ -25,4 +25,10 @@ describe("annotation geometry", () => {
     expect(coordinatePoints({ type: "polygon", x: 0, y: 0, width: 0, height: 0, points })).toEqual([]);
     expect(isValidPolygonPoints(points)).toBe(false);
   });
+
+  it("rejects overflow areas and polygons containing a damaged vertex", () => {
+    expect(isValidPolygonPoints([[0, 0], [1e308, 0], [0, 1e308]])).toBe(false);
+    const points: [number, number][] = [[0, 0], [10, 0], [NaN, 3], [0, 10]];
+    expect(hasPolygonCoordinate(shape("polygon", { type: "polygon", x: 0, y: 0, width: 10, height: 10, points }))).toBe(false);
+  });
 });
