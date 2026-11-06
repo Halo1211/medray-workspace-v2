@@ -6,6 +6,6 @@ python-multipart==0.0.32
 pillow==12.3.0
 pydicom==3.0.2
 numpy>=1.26.0
-reportlab==4.4.9
+reportlab==5.0.1
 pytest==9.1.1
 httpx==0.28.1
